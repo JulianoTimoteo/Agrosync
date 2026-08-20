@@ -4342,21 +4342,38 @@
 
         // ═══════════════════════════════════════════════════════════════
         //  ESPELHO DE DADOS (Firestore) — "Modo Espectador"
-        //  Reaproveita a mesma conexão do sync acima, mas em outro documento
-        //  (analisecoa/espelhoConsumo). Diferença: aqui não sincronizamos
-        //  configurações, e sim os DADOS já processados da aba CONSUMO, para
-        //  que alguém sem acesso à pasta local (Y:\...) veja os mesmos
-        //  gráficos, quase em tempo real — sem nunca ler o arquivo original,
-        //  só o resumo em JSON.
-        //  Por enquanto só a aba CONSUMO é espelhada (é o módulo com o qual
-        //  estamos testando); as demais abas (Balança, Solinftec, Densidade,
-        //  Controle, Liberação) ainda exigem seleção de pasta local.
+        //  Reaproveita a mesma conexão do sync acima, mas em documentos
+        //  próprios (analisecoa/espelhoProducao e analisecoa/espelhoConsumo).
+        //  Diferença: aqui não sincronizamos configurações, e sim os DADOS
+        //  já processados de TODAS as abas, para que alguém sem acesso à
+        //  pasta local (Y:\...) veja o mesmo dashboard, quase em tempo real
+        //  — nunca lendo o arquivo original, só o resumo em JSON.
+        //
+        //  Dois documentos, porque as origens são funções diferentes:
+        //   - espelhoProducao: tudo que processBalanceData()/processSolinftecData()
+        //     calculam — alimenta Solinftec, Balança, Densidade de Carga,
+        //     Controle de Carga e Lab (todas dependem de balanceData/coaData/
+        //     horariaRaw/densidadeRaw/etc, todas populadas ali).
+        //   - espelhoConsumo: o que processConsumoFiles() calcula — alimenta
+        //     a aba Consumo (Caminhão/Colhedoras/TPL).
+        //  Controle de Liberação (liberacaoControle/liberacaoHistorico) já
+        //  sincroniza sozinho pelo doc "estadoCompartilhado" (initSharedSync,
+        //  acima), então não precisa de nada novo aqui — só liberacaoUnicos/
+        //  liberacaoRaw (o cruzamento com o Producao.xlsx) entram no pacote
+        //  de espelhoProducao.
         // ═══════════════════════════════════════════════════════════════
-        let espelhoDocRef = null;
         let espelhoModoEspectador = false;
-        let espelhoUnsub = null;
-        let espelhoSaveTimer = null;
+        let espelhoUnsubs = [];
+        let espelhoSaveTimerProducao = null;
+        let espelhoSaveTimerConsumo = null;
         const ESPELHO_SAVE_DEBOUNCE_MS = 1500;
+
+        function espelhoGetDoc(nome) {
+            try {
+                if (!window.firebase || !firebase.apps || !firebase.apps.length) return null;
+                return firebase.firestore().collection('analisecoa').doc(nome);
+            } catch (_) { return null; }
+        }
 
         // Desliga o Modo Espectador (chamado quando o usuário seleciona uma
         // pasta local de verdade — a partir daí ele volta a ser "fonte", não
@@ -4364,27 +4381,45 @@
         // que chegar do Firestore).
         function espelhoDesligarEspectador() {
             espelhoModoEspectador = false;
-            if (espelhoUnsub) { espelhoUnsub(); espelhoUnsub = null; }
+            espelhoUnsubs.forEach(fn => { try { fn(); } catch (_) { } });
+            espelhoUnsubs = [];
         }
 
-        function espelhoGetDocRef() {
-            if (espelhoDocRef) return espelhoDocRef;
-            try {
-                if (!window.firebase || !firebase.apps || !firebase.apps.length) return null;
-                espelhoDocRef = firebase.firestore().collection('analisecoa').doc('espelhoConsumo');
-                return espelhoDocRef;
-            } catch (_) { return null; }
+        // ── Publicação (lado "fonte" — quem tem a pasta local) ──────────────
+        function espelhoPublicarProducao(origem) {
+            if (espelhoModoEspectador) return;
+            clearTimeout(espelhoSaveTimerProducao);
+            espelhoSaveTimerProducao = setTimeout(() => {
+                const ref = espelhoGetDoc('espelhoProducao');
+                if (!ref || !window.firebase) return;
+                const payload = {
+                    origem: origem || '',
+                    balanceData: balanceData,
+                    balanceLoaded: balanceLoaded,
+                    solinftecData: solinftecData,
+                    solinftecLoaded: solinftecLoaded,
+                    solinftecPeriodo: solinftecPeriodo,
+                    coaData: coaData,
+                    horariaRaw: horariaRaw,
+                    permanenciaData: permanenciaData,
+                    densidadeRaw: densidadeRaw,
+                    liberacaoUnicos: liberacaoUnicos,
+                    liberacaoRaw: liberacaoRaw,
+                    lastTotalMoagem: lastTotalMoagem,
+                    _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                ref.set(payload, { merge: true }).catch(err => {
+                    console.warn('[espelho] falha ao publicar dados de produção (provável causa: documento passou de 1MB — considere reduzir o período do relatório):', err);
+                    if (typeof showToast === 'function') showToast('⚠️ Falha ao publicar espelho (dados grandes demais?)', '#dc2626');
+                });
+            }, ESPELHO_SAVE_DEBOUNCE_MS);
         }
 
-        // Chamado depois que os arquivos locais da pasta foram processados —
-        // publica o resultado (só dados já agregados, nunca os arquivos
-        // originais) no Firestore. Não faz nada se este computador estiver
-        // no Modo Espectador (espectador nunca escreve, só lê).
         function espelhoPublicarConsumo(origem) {
             if (espelhoModoEspectador) return;
-            clearTimeout(espelhoSaveTimer);
-            espelhoSaveTimer = setTimeout(() => {
-                const ref = espelhoGetDocRef();
+            clearTimeout(espelhoSaveTimerConsumo);
+            espelhoSaveTimerConsumo = setTimeout(() => {
+                const ref = espelhoGetDoc('espelhoConsumo');
                 if (!ref || !window.firebase) return;
                 const payload = {
                     origem: origem || '',
@@ -4414,9 +4449,41 @@
             }, ESPELHO_SAVE_DEBOUNCE_MS);
         }
 
-        // Aplica o snapshot remoto do Firestore nas mesmas variáveis globais
-        // que o processamento local usaria — dali em diante é o renderConsumo()
-        // de sempre, sem nenhuma lógica de renderização duplicada.
+        // Chamado em todo lugar que hoje carrega a pasta local — publica os
+        // dois documentos de uma vez.
+        function espelhoPublicarTudo(origem) {
+            espelhoPublicarProducao(origem);
+            espelhoPublicarConsumo(origem);
+        }
+
+        // ── Aplicação (lado "espectador") ────────────────────────────────
+        let espelhoUltimoOrigemProducao = '';
+        let espelhoUltimoOrigemConsumo = '';
+        let espelhoUltimoCarimboProducao = '';
+        let espelhoUltimoCarimboConsumo = '';
+
+        function espelhoAplicarProducao(data) {
+            if (!data) return;
+            balanceData = data.balanceData || [];
+            balanceLoaded = !!data.balanceLoaded;
+            solinftecData = data.solinftecData || { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
+            solinftecLoaded = !!data.solinftecLoaded;
+            solinftecPeriodo = data.solinftecPeriodo || '';
+            coaData = data.coaData || [];
+            horariaRaw = data.horariaRaw || [];
+            permanenciaData = data.permanenciaData || [];
+            densidadeRaw = data.densidadeRaw || [];
+            liberacaoUnicos = data.liberacaoUnicos || [];
+            liberacaoRaw = data.liberacaoRaw || [];
+            lastTotalMoagem = data.lastTotalMoagem || 0;
+
+            espelhoUltimoOrigemProducao = data.origem || '';
+            espelhoUltimoCarimboProducao = (data._atualizadoEm && data._atualizadoEm.toDate)
+                ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
+
+            espelhoRenderTudo();
+        }
+
         function espelhoAplicarConsumo(data) {
             if (!data) return;
             consumoPeriodoCaminhao = data.periodoCaminhao || '';
@@ -4449,55 +4516,72 @@
                 classTpl: consumoTplData.length ? {} : null
             };
 
-            const carimbo = (data._atualizadoEm && data._atualizadoEm.toDate)
-                ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR')
-                : '';
-            const nomeOrigem = '🪞 Espelho de "' + (data.origem || '?') + '"' + (carimbo ? ' · atualizado ' + carimbo : '');
-            showDashboard(nomeOrigem);
-            ativarAbaConsumoEspectador();
+            espelhoUltimoOrigemConsumo = data.origem || '';
+            espelhoUltimoCarimboConsumo = (data._atualizadoEm && data._atualizadoEm.toDate)
+                ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
+
+            espelhoRenderTudo();
         }
 
-        // Mostra a aba CONSUMO já ativa — por enquanto é o único módulo
-        // espelhado, então nem faz sentido deixar as outras abas visíveis
-        // "vazias" no Modo Espectador.
-        function ativarAbaConsumoEspectador() {
-            document.querySelectorAll('.main-tab-content').forEach(el => el.classList.remove('active'));
-            const alvo = document.getElementById('main-consumo');
-            if (alvo) alvo.classList.add('active');
-            document.querySelectorAll('.main-tab').forEach(t => {
-                t.classList.toggle('active', /CONSUMO/.test(t.textContent));
-            });
-            const balHeaderTabs = document.getElementById('balance-tabs-header');
-            if (balHeaderTabs) balHeaderTabs.style.display = 'none';
-            renderConsumo();
+        // Re-renderiza TODAS as abas com o estado atual (seja ele local ou
+        // vindo do espelho) — as mesmas funções que rodam depois de um
+        // carregamento normal de pasta, só que chamadas de uma vez só, sem
+        // depender de qual aba está ativa no momento.
+        function espelhoRenderTudo() {
+            const origem = espelhoUltimoOrigemProducao || espelhoUltimoOrigemConsumo || '?';
+            const carimbo = espelhoUltimoCarimboProducao || espelhoUltimoCarimboConsumo || '';
+            showDashboard('🪞 Espelho de "' + origem + '"' + (carimbo ? ' · atualizado ' + carimbo : ''));
+
+            try { if (typeof renderSolinftec === 'function') renderSolinftec(); } catch (e) { console.warn(e); }
+            try { if (typeof renderBalanceTimeline === 'function') renderBalanceTimeline(); } catch (e) { console.warn(e); }
+            try { if (typeof renderBalance === 'function') renderBalance(); } catch (e) { console.warn(e); }
+            try { if (typeof renderDensidadeTimeline === 'function') renderDensidadeTimeline(); } catch (e) { console.warn(e); }
+            try { if (typeof renderDensidade === 'function') renderDensidade(); } catch (e) { console.warn(e); }
+            try { if (typeof renderLabTimeline === 'function') renderLabTimeline(); } catch (e) { console.warn(e); }
+            try { if (typeof renderLab === 'function') renderLab(); } catch (e) { console.warn(e); }
+            try { if (typeof renderControleTimeline === 'function') renderControleTimeline(); } catch (e) { console.warn(e); }
+            try { if (typeof renderControle === 'function') renderControle(); } catch (e) { console.warn(e); }
+            try { if (typeof renderLiberacao === 'function') renderLiberacao(); } catch (e) { console.warn(e); }
+            try { if (typeof renderConsumo === 'function') renderConsumo(); } catch (e) { console.warn(e); }
         }
 
-        // Liga o Modo Espectador: não pede pasta nenhuma, só escuta o
-        // Firestore e re-renderiza sempre que o computador de origem
-        // publicar uma atualização (inclusive pelo auto-refresh de 10 min).
+        // Liga o Modo Espectador: não pede pasta nenhuma, só escuta os dois
+        // documentos do Firestore e re-renderiza sempre que o computador de
+        // origem publicar uma atualização (inclusive pelo auto-refresh de
+        // 10 min). Todas as abas ficam navegáveis normalmente — o clique nas
+        // abas continua funcionando como sempre, só que com dados que vieram
+        // do Firestore em vez de um arquivo local.
         function ativarModoEspectador() {
             espelhoModoEspectador = true;
             setAutobanner_off();
             const uploadEl = document.getElementById('uploadPrompt');
             if (uploadEl) uploadEl.classList.add('hidden');
-            const ref = espelhoGetDocRef();
-            if (!ref) {
+
+            const refProducao = espelhoGetDoc('espelhoProducao');
+            const refConsumo = espelhoGetDoc('espelhoConsumo');
+            if (!refProducao || !refConsumo) {
                 if (uploadEl) uploadEl.classList.remove('hidden');
                 espelhoModoEspectador = false;
                 if (typeof showToast === 'function') showToast('⚠️ Sincronização indisponível — verifique a internet e recarregue a página', '#dc2626');
                 return;
             }
             if (typeof showToast === 'function') showToast('👁️ Modo Espectador ativado — aguardando dados sincronizados…', '#0891b2');
-            espelhoUnsub = ref.onSnapshot(snap => {
-                if (!snap.exists) {
-                    if (typeof showToast === 'function') showToast('⏳ Aguardando alguém carregar a pasta no computador de origem…', '#f59e0b');
-                    return;
-                }
+
+            espelhoUnsubs.push(refProducao.onSnapshot(snap => {
+                if (!snap.exists) return;
+                espelhoAplicarProducao(snap.data());
+            }, err => {
+                console.warn('[espelho] falha ao escutar dados de produção:', err);
+                if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos', '#dc2626');
+            }));
+
+            espelhoUnsubs.push(refConsumo.onSnapshot(snap => {
+                if (!snap.exists) return;
                 espelhoAplicarConsumo(snap.data());
             }, err => {
                 console.warn('[espelho] falha ao escutar dados de consumo:', err);
                 if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos', '#dc2626');
-            });
+            }));
         }
         // ═══════════════════════════════════════════════════════════════
 
@@ -7887,7 +7971,7 @@
             showDashboard(name);
             await processFiles(producao, solinftec);
             await processConsumoFiles(); // novo módulo CONSUMO
-            espelhoPublicarConsumo(name); // publica no Firestore p/ Modo Espectador
+            espelhoPublicarTudo(name); // publica no Firestore p/ Modo Espectador
             autoRefreshIniciar(handle, name);
             setAutoBanner(`✅ Pasta "${name}" carregada automaticamente!`, true);
         }
@@ -7978,7 +8062,7 @@
                     showDashboard(name);
                     await processFiles(producao, solinftec);
                     await processConsumoFiles(); // novo módulo CONSUMO
-                    espelhoPublicarConsumo(name); // publica no Firestore p/ Modo Espectador
+                    espelhoPublicarTudo(name); // publica no Firestore p/ Modo Espectador
                     autoRefreshIniciar(dirHandle, name);
                     return;
                 } catch (err) {
@@ -8006,7 +8090,7 @@
                 });
                 await processFiles(producaoFile, solinftecFile);
                 await processConsumoFiles(); // novo módulo CONSUMO
-                espelhoPublicarConsumo(folderName); // publica no Firestore p/ Modo Espectador
+                espelhoPublicarTudo(folderName); // publica no Firestore p/ Modo Espectador
             };
             input.click();
         }
@@ -8060,7 +8144,7 @@
                 autoRefreshNomeAtual = name;
                 await processFiles(producao, solinftec);
                 await processConsumoFiles();
-                espelhoPublicarConsumo(name);
+                espelhoPublicarTudo(name);
                 if (typeof showToast === 'function') showToast('🔄 Dados atualizados automaticamente', '#16a34a');
             } catch (err) {
                 console.warn('Auto-refresh falhou:', err);
