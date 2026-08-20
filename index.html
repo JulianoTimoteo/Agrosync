@@ -3440,6 +3440,13 @@
             <p id="last-folder-hint" style="margin-top:18px;font-size:12px;color:var(--color-text-muted);display:none;">
                 💡 Ou aguarde — tentando carregar a última pasta usada…
             </p>
+            <button type="button" class="btn-folder" style="margin-top:18px;"
+                onclick="event.stopPropagation(); ativarModoEspectador();">
+                👁️ Modo Espectador — ver dados de outro computador
+            </button>
+            <p style="margin-top:8px;font-size:11px;color:var(--color-text-muted);">
+                Sem acesso à pasta local. Mostra o espelho da aba CONSUMO sincronizado por quem carregou a pasta.
+            </p>
         </div>
 
         <div id="dashboardContent" class="hidden">
@@ -4332,6 +4339,168 @@
 
         document.addEventListener('DOMContentLoaded', initSharedSync);
         // ═══════════════════════════════════════════════════════════════
+
+        // ═══════════════════════════════════════════════════════════════
+        //  ESPELHO DE DADOS (Firestore) — "Modo Espectador"
+        //  Reaproveita a mesma conexão do sync acima, mas em outro documento
+        //  (analisecoa/espelhoConsumo). Diferença: aqui não sincronizamos
+        //  configurações, e sim os DADOS já processados da aba CONSUMO, para
+        //  que alguém sem acesso à pasta local (Y:\...) veja os mesmos
+        //  gráficos, quase em tempo real — sem nunca ler o arquivo original,
+        //  só o resumo em JSON.
+        //  Por enquanto só a aba CONSUMO é espelhada (é o módulo com o qual
+        //  estamos testando); as demais abas (Balança, Solinftec, Densidade,
+        //  Controle, Liberação) ainda exigem seleção de pasta local.
+        // ═══════════════════════════════════════════════════════════════
+        let espelhoDocRef = null;
+        let espelhoModoEspectador = false;
+        let espelhoUnsub = null;
+        let espelhoSaveTimer = null;
+        const ESPELHO_SAVE_DEBOUNCE_MS = 1500;
+
+        // Desliga o Modo Espectador (chamado quando o usuário seleciona uma
+        // pasta local de verdade — a partir daí ele volta a ser "fonte", não
+        // "espectador", e não deve mais sobrescrever a própria tela com o
+        // que chegar do Firestore).
+        function espelhoDesligarEspectador() {
+            espelhoModoEspectador = false;
+            if (espelhoUnsub) { espelhoUnsub(); espelhoUnsub = null; }
+        }
+
+        function espelhoGetDocRef() {
+            if (espelhoDocRef) return espelhoDocRef;
+            try {
+                if (!window.firebase || !firebase.apps || !firebase.apps.length) return null;
+                espelhoDocRef = firebase.firestore().collection('analisecoa').doc('espelhoConsumo');
+                return espelhoDocRef;
+            } catch (_) { return null; }
+        }
+
+        // Chamado depois que os arquivos locais da pasta foram processados —
+        // publica o resultado (só dados já agregados, nunca os arquivos
+        // originais) no Firestore. Não faz nada se este computador estiver
+        // no Modo Espectador (espectador nunca escreve, só lê).
+        function espelhoPublicarConsumo(origem) {
+            if (espelhoModoEspectador) return;
+            clearTimeout(espelhoSaveTimer);
+            espelhoSaveTimer = setTimeout(() => {
+                const ref = espelhoGetDocRef();
+                if (!ref || !window.firebase) return;
+                const payload = {
+                    origem: origem || '',
+                    periodoCaminhao: consumoPeriodoCaminhao,
+                    periodoColhedoras: consumoPeriodoColhedoras,
+                    periodoTpl: consumoPeriodoTpl,
+                    dataRelatorioCaminhao: consumoDataRelatorioCaminhao,
+                    dataRelatorioColhedoras: consumoDataRelatorioColhedoras,
+                    dataRelatorioTpl: consumoDataRelatorioTpl,
+                    colunasCaminhao: consumoColunasCaminhao,
+                    colunasColhedoras: consumoColunasColhedoras,
+                    colunasTpl: consumoColunasTpl,
+                    metricaCaminhao: consumoMetricaCaminhao,
+                    metricaColhedoras: consumoMetricaColhedoras,
+                    metricaTpl: consumoMetricaTpl,
+                    metasCaminhao: consumoMetasCaminhao,
+                    metasColhedoras: consumoMetasColhedoras,
+                    metasTpl: consumoMetasTpl,
+                    dadosCaminhao: consumoCaminhaoData,
+                    dadosColhedoras: consumoColhedorasData,
+                    dadosTpl: consumoTplData,
+                    _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                ref.set(payload, { merge: true }).catch(err => {
+                    console.warn('[espelho] falha ao publicar dados de consumo:', err);
+                });
+            }, ESPELHO_SAVE_DEBOUNCE_MS);
+        }
+
+        // Aplica o snapshot remoto do Firestore nas mesmas variáveis globais
+        // que o processamento local usaria — dali em diante é o renderConsumo()
+        // de sempre, sem nenhuma lógica de renderização duplicada.
+        function espelhoAplicarConsumo(data) {
+            if (!data) return;
+            consumoPeriodoCaminhao = data.periodoCaminhao || '';
+            consumoPeriodoColhedoras = data.periodoColhedoras || '';
+            consumoPeriodoTpl = data.periodoTpl || '';
+            consumoDataRelatorioCaminhao = data.dataRelatorioCaminhao || '';
+            consumoDataRelatorioColhedoras = data.dataRelatorioColhedoras || '';
+            consumoDataRelatorioTpl = data.dataRelatorioTpl || '';
+            consumoColunasCaminhao = data.colunasCaminhao || [];
+            consumoColunasColhedoras = data.colunasColhedoras || [];
+            consumoColunasTpl = data.colunasTpl || [];
+            consumoMetricaCaminhao = data.metricaCaminhao || null;
+            consumoMetricaColhedoras = data.metricaColhedoras || null;
+            consumoMetricaTpl = data.metricaTpl || null;
+            consumoMetasCaminhao = data.metasCaminhao || {};
+            consumoMetasColhedoras = data.metasColhedoras || {};
+            consumoMetasTpl = data.metasTpl || {};
+            consumoCaminhaoData = data.dadosCaminhao || [];
+            consumoColhedorasData = data.dadosColhedoras || [];
+            consumoTplData = data.dadosTpl || [];
+            consumoProcessado = true;
+            // "Finge" que os arquivos estão presentes, só pra as mensagens de
+            // status do módulo Consumo não reclamarem de arquivo faltando.
+            consumoArquivos = {
+                consCam: consumoCaminhaoData.length ? {} : null,
+                consCol: consumoColhedorasData.length ? {} : null,
+                classCam: consumoCaminhaoData.length ? {} : null,
+                classCol: consumoColhedorasData.length ? {} : null,
+                consTplGlobal: consumoTplData.length ? {} : null,
+                classTpl: consumoTplData.length ? {} : null
+            };
+
+            const carimbo = (data._atualizadoEm && data._atualizadoEm.toDate)
+                ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR')
+                : '';
+            const nomeOrigem = '🪞 Espelho de "' + (data.origem || '?') + '"' + (carimbo ? ' · atualizado ' + carimbo : '');
+            showDashboard(nomeOrigem);
+            ativarAbaConsumoEspectador();
+        }
+
+        // Mostra a aba CONSUMO já ativa — por enquanto é o único módulo
+        // espelhado, então nem faz sentido deixar as outras abas visíveis
+        // "vazias" no Modo Espectador.
+        function ativarAbaConsumoEspectador() {
+            document.querySelectorAll('.main-tab-content').forEach(el => el.classList.remove('active'));
+            const alvo = document.getElementById('main-consumo');
+            if (alvo) alvo.classList.add('active');
+            document.querySelectorAll('.main-tab').forEach(t => {
+                t.classList.toggle('active', /CONSUMO/.test(t.textContent));
+            });
+            const balHeaderTabs = document.getElementById('balance-tabs-header');
+            if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+            renderConsumo();
+        }
+
+        // Liga o Modo Espectador: não pede pasta nenhuma, só escuta o
+        // Firestore e re-renderiza sempre que o computador de origem
+        // publicar uma atualização (inclusive pelo auto-refresh de 10 min).
+        function ativarModoEspectador() {
+            espelhoModoEspectador = true;
+            setAutobanner_off();
+            const uploadEl = document.getElementById('uploadPrompt');
+            if (uploadEl) uploadEl.classList.add('hidden');
+            const ref = espelhoGetDocRef();
+            if (!ref) {
+                if (uploadEl) uploadEl.classList.remove('hidden');
+                espelhoModoEspectador = false;
+                if (typeof showToast === 'function') showToast('⚠️ Sincronização indisponível — verifique a internet e recarregue a página', '#dc2626');
+                return;
+            }
+            if (typeof showToast === 'function') showToast('👁️ Modo Espectador ativado — aguardando dados sincronizados…', '#0891b2');
+            espelhoUnsub = ref.onSnapshot(snap => {
+                if (!snap.exists) {
+                    if (typeof showToast === 'function') showToast('⏳ Aguardando alguém carregar a pasta no computador de origem…', '#f59e0b');
+                    return;
+                }
+                espelhoAplicarConsumo(snap.data());
+            }, err => {
+                console.warn('[espelho] falha ao escutar dados de consumo:', err);
+                if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos', '#dc2626');
+            });
+        }
+        // ═══════════════════════════════════════════════════════════════
+
 
         // ── CONTROLE DE LIBERAÇÃO (Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente) ──
         let liberacaoUnicos = []; // [{key, codFazenda, descFazenda, liberacao, codFrente}]
@@ -7718,6 +7887,8 @@
             showDashboard(name);
             await processFiles(producao, solinftec);
             await processConsumoFiles(); // novo módulo CONSUMO
+            espelhoPublicarConsumo(name); // publica no Firestore p/ Modo Espectador
+            autoRefreshIniciar(handle, name);
             setAutoBanner(`✅ Pasta "${name}" carregada automaticamente!`, true);
         }
 
@@ -7796,6 +7967,7 @@
 
         // Seleção manual de pasta
         async function selectFolder() {
+            espelhoDesligarEspectador(); // seleção manual de pasta = este computador volta a ser "fonte"
             // Tenta File System Access API primeiro (Chrome/Edge ≥ 86)
             if ('showDirectoryPicker' in window) {
                 try {
@@ -7806,6 +7978,8 @@
                     showDashboard(name);
                     await processFiles(producao, solinftec);
                     await processConsumoFiles(); // novo módulo CONSUMO
+                    espelhoPublicarConsumo(name); // publica no Firestore p/ Modo Espectador
+                    autoRefreshIniciar(dirHandle, name);
                     return;
                 } catch (err) {
                     if (err.name === 'AbortError') return; // usuário cancelou
@@ -7832,6 +8006,7 @@
                 });
                 await processFiles(producaoFile, solinftecFile);
                 await processConsumoFiles(); // novo módulo CONSUMO
+                espelhoPublicarConsumo(folderName); // publica no Firestore p/ Modo Espectador
             };
             input.click();
         }
@@ -7839,6 +8014,80 @@
             const b = document.getElementById('auto-load-banner');
             if (b) b.style.display = 'none';
         }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  AUTO-REFRESH — relê a pasta local a cada 10 minutos, sem precisar
+        //  de F5. Só funciona em quem tem a pasta mapeada (handle salvo);
+        //  no Modo Espectador não há nada a relêr, os dados chegam pelo
+        //  Firestore em tempo real.
+        // ═══════════════════════════════════════════════════════════════
+        const AUTO_REFRESH_SEGUNDOS = 10 * 60; // 10 minutos
+        let autoRefreshHandleAtual = null;
+        let autoRefreshNomeAtual = '';
+        let autoRefreshSegundosRestantes = AUTO_REFRESH_SEGUNDOS;
+        let autoRefreshTickTimer = null;
+        let autoRefreshEmAndamento = false;
+
+        function autoRefreshFormatarContagem(segundos) {
+            const m = Math.floor(segundos / 60);
+            const s = segundos % 60;
+            return m + ':' + String(s).padStart(2, '0');
+        }
+
+        function autoRefreshAtualizarBadge() {
+            const el = document.getElementById('auto-refresh-counter');
+            if (!el) return;
+            if (!autoRefreshHandleAtual) { el.style.display = 'none'; return; }
+            el.style.display = 'inline-flex';
+            el.title = 'Clique para atualizar agora · próxima atualização automática em ' + autoRefreshFormatarContagem(autoRefreshSegundosRestantes);
+            el.textContent = autoRefreshEmAndamento ? '🔄 Atualizando…' : ('🔄 ' + autoRefreshFormatarContagem(autoRefreshSegundosRestantes));
+        }
+
+        // manual=true (clique no badge) pode pedir permissão de novo se preciso;
+        // manual=false (tick automático) nunca interrompe o usuário com um prompt.
+        async function autoRefreshExecutar(manual) {
+            if (!autoRefreshHandleAtual || autoRefreshEmAndamento) return;
+            autoRefreshEmAndamento = true;
+            autoRefreshAtualizarBadge();
+            try {
+                let perm = await autoRefreshHandleAtual.queryPermission({ mode: 'read' });
+                if (perm !== 'granted') {
+                    if (!manual) { autoRefreshEmAndamento = false; autoRefreshAtualizarBadge(); return; }
+                    perm = await autoRefreshHandleAtual.requestPermission({ mode: 'read' });
+                    if (perm !== 'granted') { autoRefreshEmAndamento = false; autoRefreshAtualizarBadge(); return; }
+                }
+                const { producao, solinftec, name } = await loadFromDirHandle(autoRefreshHandleAtual);
+                autoRefreshNomeAtual = name;
+                await processFiles(producao, solinftec);
+                await processConsumoFiles();
+                espelhoPublicarConsumo(name);
+                if (typeof showToast === 'function') showToast('🔄 Dados atualizados automaticamente', '#16a34a');
+            } catch (err) {
+                console.warn('Auto-refresh falhou:', err);
+            } finally {
+                autoRefreshEmAndamento = false;
+                autoRefreshSegundosRestantes = AUTO_REFRESH_SEGUNDOS;
+                autoRefreshAtualizarBadge();
+            }
+        }
+
+        function autoRefreshIniciar(handle, nome) {
+            autoRefreshHandleAtual = handle;
+            autoRefreshNomeAtual = nome || '';
+            autoRefreshSegundosRestantes = AUTO_REFRESH_SEGUNDOS;
+            autoRefreshAtualizarBadge();
+            if (autoRefreshTickTimer) clearInterval(autoRefreshTickTimer);
+            autoRefreshTickTimer = setInterval(() => {
+                if (!autoRefreshHandleAtual) return;
+                autoRefreshSegundosRestantes--;
+                if (autoRefreshSegundosRestantes <= 0) autoRefreshExecutar(false);
+                else autoRefreshAtualizarBadge();
+            }, 1000);
+        }
+
+        function autoRefreshForcar() { autoRefreshExecutar(true); }
+        // ═══════════════════════════════════════════════════════════════
+
 
         // Inicia a tentativa de auto-carregamento assim que a página carrega
         window.addEventListener('load', () => { tryAutoLoad(); });
