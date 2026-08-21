@@ -3445,8 +3445,20 @@
                 👁️ Modo Espectador — ver dados de outro computador
             </button>
             <p style="margin-top:8px;font-size:11px;color:var(--color-text-muted);">
-                Sem acesso à pasta local. Mostra o espelho da aba CONSUMO sincronizado por quem carregou a pasta.
+                Sem acesso à pasta local. Espelha todas as abas sincronizadas por quem carregou a pasta.
             </p>
+        </div>
+
+        <!-- Painel de status do Modo Espectador — único jeito de saber se está
+             conectando, aguardando dados, ou se deu algum problema no meio do caminho -->
+        <div id="espectadorStatus" class="upload-zone hidden" style="text-align:center;">
+            <div id="espectadorStatusIcon" style="font-size:42px;margin-bottom:10px;">🔄</div>
+            <h3 id="espectadorStatusTitulo">Conectando…</h3>
+            <p id="espectadorStatusDetalhe" class="upload-zone-sub">Autenticando com o servidor de sincronização…</p>
+            <button type="button" class="btn-folder" style="margin-top:18px;"
+                onclick="espelhoCancelar()">
+                ✕ Cancelar e voltar
+            </button>
         </div>
 
         <div id="dashboardContent" class="hidden">
@@ -4404,6 +4416,8 @@
             espelhoModoEspectador = false;
             espelhoUnsubs.forEach(fn => { try { fn(); } catch (_) { } });
             espelhoUnsubs = [];
+            const painel = document.getElementById('espectadorStatus');
+            if (painel) painel.classList.add('hidden');
         }
 
         // ── Publicação (lado "fonte" — quem tem a pasta local) ──────────────
@@ -4486,65 +4500,99 @@
         let espelhoUltimoOrigemConsumo = '';
         let espelhoUltimoCarimboProducao = '';
         let espelhoUltimoCarimboConsumo = '';
+        let espelhoRecebeuProducao = false;
+        let espelhoRecebeuConsumo = false;
+
+        // Painel de status visível — é o que faltava: sem isso, ficar
+        // "aguardando dados" e "deu erro" pareciam a mesma coisa (tela em
+        // branco). Esconde/mostra uploadPrompt x espectadorStatus x
+        // dashboardContent conforme o estágio.
+        function espelhoStatus(icon, titulo, detalhe) {
+            const painel = document.getElementById('espectadorStatus');
+            if (!painel) return;
+            painel.classList.remove('hidden');
+            const iconEl = document.getElementById('espectadorStatusIcon');
+            const tituloEl = document.getElementById('espectadorStatusTitulo');
+            const detalheEl = document.getElementById('espectadorStatusDetalhe');
+            if (iconEl) iconEl.textContent = icon;
+            if (tituloEl) tituloEl.textContent = titulo;
+            if (detalheEl) detalheEl.textContent = detalhe || '';
+        }
+        function espelhoStatusEsconder() {
+            const painel = document.getElementById('espectadorStatus');
+            if (painel) painel.classList.add('hidden');
+        }
 
         function espelhoAplicarProducao(data) {
             if (!data) return;
-            balanceData = data.balanceData || [];
-            balanceLoaded = !!data.balanceLoaded;
-            solinftecData = data.solinftecData || { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
-            solinftecLoaded = !!data.solinftecLoaded;
-            solinftecPeriodo = data.solinftecPeriodo || '';
-            coaData = data.coaData || [];
-            horariaRaw = data.horariaRaw || [];
-            permanenciaData = data.permanenciaData || [];
-            densidadeRaw = data.densidadeRaw || [];
-            liberacaoUnicos = data.liberacaoUnicos || [];
-            liberacaoRaw = data.liberacaoRaw || [];
-            lastTotalMoagem = data.lastTotalMoagem || 0;
+            try {
+                balanceData = data.balanceData || [];
+                balanceLoaded = !!data.balanceLoaded;
+                solinftecData = data.solinftecData || { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
+                solinftecLoaded = !!data.solinftecLoaded;
+                solinftecPeriodo = data.solinftecPeriodo || '';
+                coaData = data.coaData || [];
+                horariaRaw = data.horariaRaw || [];
+                permanenciaData = data.permanenciaData || [];
+                densidadeRaw = data.densidadeRaw || [];
+                liberacaoUnicos = data.liberacaoUnicos || [];
+                liberacaoRaw = data.liberacaoRaw || [];
+                lastTotalMoagem = data.lastTotalMoagem || 0;
 
-            espelhoUltimoOrigemProducao = data.origem || '';
-            espelhoUltimoCarimboProducao = (data._atualizadoEm && data._atualizadoEm.toDate)
-                ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
-
+                espelhoUltimoOrigemProducao = data.origem || '';
+                espelhoUltimoCarimboProducao = (data._atualizadoEm && data._atualizadoEm.toDate)
+                    ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
+                espelhoRecebeuProducao = true;
+            } catch (err) {
+                console.error('[espelho] erro ao aplicar dados de produção:', err);
+                espelhoStatus('⚠️', 'Erro ao aplicar dados recebidos', 'Detalhes no console do navegador (F12).');
+                return;
+            }
             espelhoRenderTudo();
         }
 
         function espelhoAplicarConsumo(data) {
             if (!data) return;
-            consumoPeriodoCaminhao = data.periodoCaminhao || '';
-            consumoPeriodoColhedoras = data.periodoColhedoras || '';
-            consumoPeriodoTpl = data.periodoTpl || '';
-            consumoDataRelatorioCaminhao = data.dataRelatorioCaminhao || '';
-            consumoDataRelatorioColhedoras = data.dataRelatorioColhedoras || '';
-            consumoDataRelatorioTpl = data.dataRelatorioTpl || '';
-            consumoColunasCaminhao = data.colunasCaminhao || [];
-            consumoColunasColhedoras = data.colunasColhedoras || [];
-            consumoColunasTpl = data.colunasTpl || [];
-            consumoMetricaCaminhao = data.metricaCaminhao || null;
-            consumoMetricaColhedoras = data.metricaColhedoras || null;
-            consumoMetricaTpl = data.metricaTpl || null;
-            consumoMetasCaminhao = data.metasCaminhao || {};
-            consumoMetasColhedoras = data.metasColhedoras || {};
-            consumoMetasTpl = data.metasTpl || {};
-            consumoCaminhaoData = data.dadosCaminhao || [];
-            consumoColhedorasData = data.dadosColhedoras || [];
-            consumoTplData = data.dadosTpl || [];
-            consumoProcessado = true;
-            // "Finge" que os arquivos estão presentes, só pra as mensagens de
-            // status do módulo Consumo não reclamarem de arquivo faltando.
-            consumoArquivos = {
-                consCam: consumoCaminhaoData.length ? {} : null,
-                consCol: consumoColhedorasData.length ? {} : null,
-                classCam: consumoCaminhaoData.length ? {} : null,
-                classCol: consumoColhedorasData.length ? {} : null,
-                consTplGlobal: consumoTplData.length ? {} : null,
-                classTpl: consumoTplData.length ? {} : null
-            };
+            try {
+                consumoPeriodoCaminhao = data.periodoCaminhao || '';
+                consumoPeriodoColhedoras = data.periodoColhedoras || '';
+                consumoPeriodoTpl = data.periodoTpl || '';
+                consumoDataRelatorioCaminhao = data.dataRelatorioCaminhao || '';
+                consumoDataRelatorioColhedoras = data.dataRelatorioColhedoras || '';
+                consumoDataRelatorioTpl = data.dataRelatorioTpl || '';
+                consumoColunasCaminhao = data.colunasCaminhao || [];
+                consumoColunasColhedoras = data.colunasColhedoras || [];
+                consumoColunasTpl = data.colunasTpl || [];
+                consumoMetricaCaminhao = data.metricaCaminhao || null;
+                consumoMetricaColhedoras = data.metricaColhedoras || null;
+                consumoMetricaTpl = data.metricaTpl || null;
+                consumoMetasCaminhao = data.metasCaminhao || {};
+                consumoMetasColhedoras = data.metasColhedoras || {};
+                consumoMetasTpl = data.metasTpl || {};
+                consumoCaminhaoData = data.dadosCaminhao || [];
+                consumoColhedorasData = data.dadosColhedoras || [];
+                consumoTplData = data.dadosTpl || [];
+                consumoProcessado = true;
+                // "Finge" que os arquivos estão presentes, só pra as mensagens de
+                // status do módulo Consumo não reclamarem de arquivo faltando.
+                consumoArquivos = {
+                    consCam: consumoCaminhaoData.length ? {} : null,
+                    consCol: consumoColhedorasData.length ? {} : null,
+                    classCam: consumoCaminhaoData.length ? {} : null,
+                    classCol: consumoColhedorasData.length ? {} : null,
+                    consTplGlobal: consumoTplData.length ? {} : null,
+                    classTpl: consumoTplData.length ? {} : null
+                };
 
-            espelhoUltimoOrigemConsumo = data.origem || '';
-            espelhoUltimoCarimboConsumo = (data._atualizadoEm && data._atualizadoEm.toDate)
-                ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
-
+                espelhoUltimoOrigemConsumo = data.origem || '';
+                espelhoUltimoCarimboConsumo = (data._atualizadoEm && data._atualizadoEm.toDate)
+                    ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
+                espelhoRecebeuConsumo = true;
+            } catch (err) {
+                console.error('[espelho] erro ao aplicar dados de consumo:', err);
+                espelhoStatus('⚠️', 'Erro ao aplicar dados recebidos', 'Detalhes no console do navegador (F12).');
+                return;
+            }
             espelhoRenderTudo();
         }
 
@@ -4553,21 +4601,43 @@
         // carregamento normal de pasta, só que chamadas de uma vez só, sem
         // depender de qual aba está ativa no momento.
         function espelhoRenderTudo() {
+            if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo) return; // ainda não chegou nada, deixa o painel de status como está
+
             const origem = espelhoUltimoOrigemProducao || espelhoUltimoOrigemConsumo || '?';
             const carimbo = espelhoUltimoCarimboProducao || espelhoUltimoCarimboConsumo || '';
+            espelhoStatusEsconder();
             showDashboard('🪞 Espelho de "' + origem + '"' + (carimbo ? ' · atualizado ' + carimbo : ''));
 
-            try { if (typeof renderSolinftec === 'function') renderSolinftec(); } catch (e) { console.warn(e); }
-            try { if (typeof renderBalanceTimeline === 'function') renderBalanceTimeline(); } catch (e) { console.warn(e); }
-            try { if (typeof renderBalance === 'function') renderBalance(); } catch (e) { console.warn(e); }
-            try { if (typeof renderDensidadeTimeline === 'function') renderDensidadeTimeline(); } catch (e) { console.warn(e); }
-            try { if (typeof renderDensidade === 'function') renderDensidade(); } catch (e) { console.warn(e); }
-            try { if (typeof renderLabTimeline === 'function') renderLabTimeline(); } catch (e) { console.warn(e); }
-            try { if (typeof renderLab === 'function') renderLab(); } catch (e) { console.warn(e); }
-            try { if (typeof renderControleTimeline === 'function') renderControleTimeline(); } catch (e) { console.warn(e); }
-            try { if (typeof renderControle === 'function') renderControle(); } catch (e) { console.warn(e); }
-            try { if (typeof renderLiberacao === 'function') renderLiberacao(); } catch (e) { console.warn(e); }
-            try { if (typeof renderConsumo === 'function') renderConsumo(); } catch (e) { console.warn(e); }
+            let algumErro = false;
+            const tentar = (fn, nome) => {
+                try { if (typeof fn === 'function') fn(); }
+                catch (e) { algumErro = true; console.warn('[espelho] falha ao renderizar ' + nome + ':', e); }
+            };
+            tentar(typeof renderSolinftec !== 'undefined' && renderSolinftec, 'Solinftec');
+            tentar(typeof renderBalanceTimeline !== 'undefined' && renderBalanceTimeline, 'Balança (timeline)');
+            tentar(typeof renderBalance !== 'undefined' && renderBalance, 'Balança');
+            tentar(typeof renderDensidadeTimeline !== 'undefined' && renderDensidadeTimeline, 'Densidade (timeline)');
+            tentar(typeof renderDensidade !== 'undefined' && renderDensidade, 'Densidade');
+            tentar(typeof renderLabTimeline !== 'undefined' && renderLabTimeline, 'Lab (timeline)');
+            tentar(typeof renderLab !== 'undefined' && renderLab, 'Lab');
+            tentar(typeof renderControleTimeline !== 'undefined' && renderControleTimeline, 'Controle (timeline)');
+            tentar(typeof renderControle !== 'undefined' && renderControle, 'Controle');
+            tentar(typeof renderLiberacao !== 'undefined' && renderLiberacao, 'Liberação');
+            tentar(typeof renderConsumo !== 'undefined' && renderConsumo, 'Consumo');
+
+            if (algumErro && typeof showToast === 'function') {
+                showToast('⚠️ Alguma aba não renderizou corretamente — veja o console (F12)', '#dc2626');
+            }
+        }
+
+        // Sai do Modo Espectador e volta pra tela de seleção de pasta.
+        function espelhoCancelar() {
+            espelhoDesligarEspectador();
+            espelhoRecebeuProducao = false;
+            espelhoRecebeuConsumo = false;
+            espelhoStatusEsconder();
+            const uploadEl = document.getElementById('uploadPrompt');
+            if (uploadEl) uploadEl.classList.remove('hidden');
         }
 
         // Liga o Modo Espectador: não pede pasta nenhuma, só escuta os dois
@@ -4578,43 +4648,56 @@
         // do Firestore em vez de um arquivo local.
         function ativarModoEspectador() {
             espelhoModoEspectador = true;
+            espelhoRecebeuProducao = false;
+            espelhoRecebeuConsumo = false;
             setAutobanner_off();
             const uploadEl = document.getElementById('uploadPrompt');
             if (uploadEl) uploadEl.classList.add('hidden');
+            espelhoStatus('🔄', 'Conectando…', 'Autenticando com o servidor de sincronização…');
 
             const refProducao = espelhoGetDoc('espelhoProducao');
             const refConsumo = espelhoGetDoc('espelhoConsumo');
             if (!refProducao || !refConsumo) {
-                if (uploadEl) uploadEl.classList.remove('hidden');
-                espelhoModoEspectador = false;
-                if (typeof showToast === 'function') showToast('⚠️ Sincronização indisponível — verifique a internet e recarregue a página', '#dc2626');
+                espelhoStatus('⚠️', 'Sincronização indisponível', 'Verifique a internet e recarregue a página.');
                 return;
             }
-            if (typeof showToast === 'function') showToast('👁️ Modo Espectador ativado — aguardando dados sincronizados…', '#0891b2');
 
             // Só assina o Firestore depois do login anônimo terminar — assinar
             // antes disso é o que causava "Falha ao sincronizar dados remotos"
             // (as regras de segurança recusam leitura sem usuário autenticado).
             aoAutenticar(() => {
-                if (!espelhoModoEspectador) return; // usuário já saiu do Modo Espectador antes do login terminar
+                if (!espelhoModoEspectador) return; // usuário já cancelou antes do login terminar
+                espelhoStatus('👁️', 'Aguardando dados…', 'Peça para alguém carregar a pasta no computador de origem, se ainda não carregou.');
+
                 espelhoUnsubs.push(refProducao.onSnapshot(snap => {
-                    if (!snap.exists) return;
+                    if (!snap.exists) {
+                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo) {
+                            espelhoStatus('👁️', 'Aguardando dados…', 'Ainda não chegou nenhum dado de produção/balança do computador de origem.');
+                        }
+                        return;
+                    }
                     espelhoAplicarProducao(snap.data());
                 }, err => {
-                    console.warn('[espelho] falha ao escutar dados de produção (' + (err && err.code || 'erro') + '):', err);
-                    if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos (' + (err && err.code || 'erro') + ')', '#dc2626');
+                    console.error('[espelho] falha ao escutar dados de produção:', err);
+                    espelhoStatus('⚠️', 'Falha ao sincronizar', '(' + (err && err.code || 'erro') + ') — veja o console (F12) para detalhes.');
                 }));
 
                 espelhoUnsubs.push(refConsumo.onSnapshot(snap => {
-                    if (!snap.exists) return;
+                    if (!snap.exists) {
+                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo) {
+                            espelhoStatus('👁️', 'Aguardando dados…', 'Ainda não chegou nenhum dado de consumo do computador de origem.');
+                        }
+                        return;
+                    }
                     espelhoAplicarConsumo(snap.data());
                 }, err => {
-                    console.warn('[espelho] falha ao escutar dados de consumo (' + (err && err.code || 'erro') + '):', err);
-                    if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos (' + (err && err.code || 'erro') + ')', '#dc2626');
+                    console.error('[espelho] falha ao escutar dados de consumo:', err);
+                    espelhoStatus('⚠️', 'Falha ao sincronizar', '(' + (err && err.code || 'erro') + ') — veja o console (F12) para detalhes.');
                 }));
             });
         }
         // ═══════════════════════════════════════════════════════════════
+
 
 
         // ── CONTROLE DE LIBERAÇÃO (Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente) ──
