@@ -4265,6 +4265,7 @@
 
                 firebase.auth().onAuthStateChanged(user => {
                     if (!user) return;
+                    firebaseAuthMarcarPronto(); // libera espelhoProducao/espelhoConsumo p/ ler e escrever
                     syncDocRef.onSnapshot(
                         { includeMetadataChanges: true },
                         snap => applyRemoteSnapshot(snap),
@@ -4368,6 +4369,26 @@
         let espelhoSaveTimerConsumo = null;
         const ESPELHO_SAVE_DEBOUNCE_MS = 1500;
 
+        // ── Espera a autenticação anônima do Firebase (initSharedSync, acima)
+        //    antes de ler/escrever no Firestore. Sem isso, quem clica em
+        //    "Modo Espectador" logo que a página abre (o caso mais comum)
+        //    tenta ler antes do login anônimo terminar, e as regras de
+        //    segurança do Firestore recusam com "permission-denied" — o que
+        //    aparece pro usuário como "⚠️ Falha ao sincronizar dados remotos".
+        let firebaseAuthPronto = false;
+        let firebaseAuthCallbacks = [];
+        function firebaseAuthMarcarPronto() {
+            if (firebaseAuthPronto) return;
+            firebaseAuthPronto = true;
+            const fila = firebaseAuthCallbacks;
+            firebaseAuthCallbacks = [];
+            fila.forEach(cb => { try { cb(); } catch (e) { console.warn(e); } });
+        }
+        function aoAutenticar(cb) {
+            if (firebaseAuthPronto) { cb(); return; }
+            firebaseAuthCallbacks.push(cb);
+        }
+
         function espelhoGetDoc(nome) {
             try {
                 if (!window.firebase || !firebase.apps || !firebase.apps.length) return null;
@@ -4390,27 +4411,29 @@
             if (espelhoModoEspectador) return;
             clearTimeout(espelhoSaveTimerProducao);
             espelhoSaveTimerProducao = setTimeout(() => {
-                const ref = espelhoGetDoc('espelhoProducao');
-                if (!ref || !window.firebase) return;
-                const payload = {
-                    origem: origem || '',
-                    balanceData: balanceData,
-                    balanceLoaded: balanceLoaded,
-                    solinftecData: solinftecData,
-                    solinftecLoaded: solinftecLoaded,
-                    solinftecPeriodo: solinftecPeriodo,
-                    coaData: coaData,
-                    horariaRaw: horariaRaw,
-                    permanenciaData: permanenciaData,
-                    densidadeRaw: densidadeRaw,
-                    liberacaoUnicos: liberacaoUnicos,
-                    liberacaoRaw: liberacaoRaw,
-                    lastTotalMoagem: lastTotalMoagem,
-                    _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
-                };
-                ref.set(payload, { merge: true }).catch(err => {
-                    console.warn('[espelho] falha ao publicar dados de produção (provável causa: documento passou de 1MB — considere reduzir o período do relatório):', err);
-                    if (typeof showToast === 'function') showToast('⚠️ Falha ao publicar espelho (dados grandes demais?)', '#dc2626');
+                aoAutenticar(() => {
+                    const ref = espelhoGetDoc('espelhoProducao');
+                    if (!ref || !window.firebase) return;
+                    const payload = {
+                        origem: origem || '',
+                        balanceData: balanceData,
+                        balanceLoaded: balanceLoaded,
+                        solinftecData: solinftecData,
+                        solinftecLoaded: solinftecLoaded,
+                        solinftecPeriodo: solinftecPeriodo,
+                        coaData: coaData,
+                        horariaRaw: horariaRaw,
+                        permanenciaData: permanenciaData,
+                        densidadeRaw: densidadeRaw,
+                        liberacaoUnicos: liberacaoUnicos,
+                        liberacaoRaw: liberacaoRaw,
+                        lastTotalMoagem: lastTotalMoagem,
+                        _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    ref.set(payload, { merge: true }).catch(err => {
+                        console.warn('[espelho] falha ao publicar dados de produção (' + (err && err.code || 'erro') + ' — se for "permission-denied", checar regras do Firestore; se for tamanho, o documento provavelmente passou de 1MB):', err);
+                        if (typeof showToast === 'function') showToast('⚠️ Falha ao publicar espelho (dados grandes demais?)', '#dc2626');
+                    });
                 });
             }, ESPELHO_SAVE_DEBOUNCE_MS);
         }
@@ -4419,32 +4442,34 @@
             if (espelhoModoEspectador) return;
             clearTimeout(espelhoSaveTimerConsumo);
             espelhoSaveTimerConsumo = setTimeout(() => {
-                const ref = espelhoGetDoc('espelhoConsumo');
-                if (!ref || !window.firebase) return;
-                const payload = {
-                    origem: origem || '',
-                    periodoCaminhao: consumoPeriodoCaminhao,
-                    periodoColhedoras: consumoPeriodoColhedoras,
-                    periodoTpl: consumoPeriodoTpl,
-                    dataRelatorioCaminhao: consumoDataRelatorioCaminhao,
-                    dataRelatorioColhedoras: consumoDataRelatorioColhedoras,
-                    dataRelatorioTpl: consumoDataRelatorioTpl,
-                    colunasCaminhao: consumoColunasCaminhao,
-                    colunasColhedoras: consumoColunasColhedoras,
-                    colunasTpl: consumoColunasTpl,
-                    metricaCaminhao: consumoMetricaCaminhao,
-                    metricaColhedoras: consumoMetricaColhedoras,
-                    metricaTpl: consumoMetricaTpl,
-                    metasCaminhao: consumoMetasCaminhao,
-                    metasColhedoras: consumoMetasColhedoras,
-                    metasTpl: consumoMetasTpl,
-                    dadosCaminhao: consumoCaminhaoData,
-                    dadosColhedoras: consumoColhedorasData,
-                    dadosTpl: consumoTplData,
-                    _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
-                };
-                ref.set(payload, { merge: true }).catch(err => {
-                    console.warn('[espelho] falha ao publicar dados de consumo:', err);
+                aoAutenticar(() => {
+                    const ref = espelhoGetDoc('espelhoConsumo');
+                    if (!ref || !window.firebase) return;
+                    const payload = {
+                        origem: origem || '',
+                        periodoCaminhao: consumoPeriodoCaminhao,
+                        periodoColhedoras: consumoPeriodoColhedoras,
+                        periodoTpl: consumoPeriodoTpl,
+                        dataRelatorioCaminhao: consumoDataRelatorioCaminhao,
+                        dataRelatorioColhedoras: consumoDataRelatorioColhedoras,
+                        dataRelatorioTpl: consumoDataRelatorioTpl,
+                        colunasCaminhao: consumoColunasCaminhao,
+                        colunasColhedoras: consumoColunasColhedoras,
+                        colunasTpl: consumoColunasTpl,
+                        metricaCaminhao: consumoMetricaCaminhao,
+                        metricaColhedoras: consumoMetricaColhedoras,
+                        metricaTpl: consumoMetricaTpl,
+                        metasCaminhao: consumoMetasCaminhao,
+                        metasColhedoras: consumoMetasColhedoras,
+                        metasTpl: consumoMetasTpl,
+                        dadosCaminhao: consumoCaminhaoData,
+                        dadosColhedoras: consumoColhedorasData,
+                        dadosTpl: consumoTplData,
+                        _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    ref.set(payload, { merge: true }).catch(err => {
+                        console.warn('[espelho] falha ao publicar dados de consumo (' + (err && err.code || 'erro') + '):', err);
+                    });
                 });
             }, ESPELHO_SAVE_DEBOUNCE_MS);
         }
@@ -4567,21 +4592,27 @@
             }
             if (typeof showToast === 'function') showToast('👁️ Modo Espectador ativado — aguardando dados sincronizados…', '#0891b2');
 
-            espelhoUnsubs.push(refProducao.onSnapshot(snap => {
-                if (!snap.exists) return;
-                espelhoAplicarProducao(snap.data());
-            }, err => {
-                console.warn('[espelho] falha ao escutar dados de produção:', err);
-                if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos', '#dc2626');
-            }));
+            // Só assina o Firestore depois do login anônimo terminar — assinar
+            // antes disso é o que causava "Falha ao sincronizar dados remotos"
+            // (as regras de segurança recusam leitura sem usuário autenticado).
+            aoAutenticar(() => {
+                if (!espelhoModoEspectador) return; // usuário já saiu do Modo Espectador antes do login terminar
+                espelhoUnsubs.push(refProducao.onSnapshot(snap => {
+                    if (!snap.exists) return;
+                    espelhoAplicarProducao(snap.data());
+                }, err => {
+                    console.warn('[espelho] falha ao escutar dados de produção (' + (err && err.code || 'erro') + '):', err);
+                    if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos (' + (err && err.code || 'erro') + ')', '#dc2626');
+                }));
 
-            espelhoUnsubs.push(refConsumo.onSnapshot(snap => {
-                if (!snap.exists) return;
-                espelhoAplicarConsumo(snap.data());
-            }, err => {
-                console.warn('[espelho] falha ao escutar dados de consumo:', err);
-                if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos', '#dc2626');
-            }));
+                espelhoUnsubs.push(refConsumo.onSnapshot(snap => {
+                    if (!snap.exists) return;
+                    espelhoAplicarConsumo(snap.data());
+                }, err => {
+                    console.warn('[espelho] falha ao escutar dados de consumo (' + (err && err.code || 'erro') + '):', err);
+                    if (typeof showToast === 'function') showToast('⚠️ Falha ao sincronizar dados remotos (' + (err && err.code || 'erro') + ')', '#dc2626');
+                }));
+            });
         }
         // ═══════════════════════════════════════════════════════════════
 
