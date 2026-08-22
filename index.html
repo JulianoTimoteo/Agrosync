@@ -15,6 +15,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <!-- Sincronização em tempo real entre computadores (Firebase Firestore) -->
     <script src="https://cdn.jsdelivr.net/npm/firebase@10.14.1/firebase-app-compat.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/firebase@10.14.1/firebase-auth-compat.js"></script>
@@ -3491,6 +3492,10 @@
                     title="Capturar tela e copiar para área de transferência (Ctrl+C / Ctrl+V no WhatsApp)">
                     📸 CAPTURAR TELA
                 </button>
+                <button class="btn-screenshot" id="btn-export-pdf" onclick="exportarRelatorioPDF()"
+                    title="Exportar todas as abas do dashboard em um único PDF">
+                    📄 EXP. PDF
+                </button>
             </div>
             <button id="btn-menu-toggle" class="btn-menu-toggle" onclick="toggleTopMenu()"
                 title="Ocultar/mostrar menu e abas para dar mais espaço aos gráficos">⬆️</button>
@@ -4394,6 +4399,18 @@
 
     <script>
         Chart.register(ChartDataLabels);
+
+        // Sem animação de entrada em NENHUM gráfico do dashboard. Muitos deles
+        // são recriados do zero (destroy + new Chart) toda vez que o usuário
+        // troca de aba/dia/filtro, e a exportação de PDF (e o botão de
+        // capturar tela) tiram o print poucos milissegundos depois disso —
+        // bem menos que os ~1s da animação padrão do Chart.js. Isso fazia a
+        // captura pegar barras/linhas ainda "crescendo" (parciais ou faltando)
+        // enquanto rótulos desenhados por plugins à parte (que já usam o
+        // valor final) apareciam no lugar certo, dando um resultado bugado
+        // só na exportação/captura. Desligar globalmente evita esse problema
+        // em qualquer gráfico atual ou futuro, sem precisar caçar um por um.
+        Chart.defaults.animation = false;
 
         // Lê um design token (CSS custom property) já resolvido para o tema atual
         function getToken(nome, fallback) {
@@ -6740,6 +6757,15 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    // Sem animação de entrada: esse gráfico é recriado do zero
+                    // (destroy + new Chart) toda vez que a aba é trocada, e a
+                    // exportação de PDF tira o print poucos milissegundos
+                    // depois disso. Com animação ligada (padrão ~1s), a
+                    // captura pegava as barras ainda crescendo — só que o
+                    // número do total (desenhado por outro plugin, usando o
+                    // valor final) já aparecia no lugar certo, dando aquele
+                    // descompasso "número certo, barra bugada/faltando".
+                    animation: false,
                     layout: { padding: { top: 50 } }, // espaço ajustado para não cortar rótulos/título
                     interaction: { mode: 'index', intersect: false },
                     scales: {
@@ -6798,7 +6824,22 @@
                             }
                         },
                         datalabels: {
-                            display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
+                            // Só desenha o número dentro do segmento se ele tiver
+                            // altura suficiente pra caber sem colidir com o vizinho.
+                            // Em horas com muitas frentes ativas ao mesmo tempo, a
+                            // barra empilhada fica com fatias finíssimas — mostrar
+                            // rótulo em cada uma delas (fonte 8px) fazia os números
+                            // se sobreporem e virarem uma "sopa" ilegível. Fatias
+                            // menores que ~11px de altura ficam sem rótulo (o total
+                            // continua visível no topo da barra e no tooltip).
+                            display: ctx => {
+                                const valor = ctx.dataset.data[ctx.dataIndex];
+                                if (!(valor > 0)) return false;
+                                const meta = ctx.chart.getDatasetMeta(ctx.datasetIndex);
+                                const el = meta && meta.data && meta.data[ctx.dataIndex];
+                                const alturaPx = el && typeof el.height === 'number' ? el.height : null;
+                                return alturaPx === null || alturaPx >= 11;
+                            },
                             formatter: v => v.toFixed(0),
                             color: '#ffffff',
                             font: { size: 8, weight: '800', family: 'Plus Jakarta Sans' },
@@ -8764,6 +8805,11 @@
                     plugins: [ChartDataLabels],
                     options: {
                         responsive: true, maintainAspectRatio: false,
+                        // Mesmo motivo do gráfico "Entrada de Cana por Hora": esse
+                        // chart é recriado do zero a cada troca de aba, e sem
+                        // desligar a animação a exportação de PDF podia capturar
+                        // o print no meio da animação de entrada.
+                        animation: false,
                         layout: { padding: { top: 20, right: 60 } },
                         interaction: { mode: 'index', intersect: false },
                         scales: {
@@ -8855,6 +8901,9 @@
                     },
                     options: {
                         responsive: true, maintainAspectRatio: false,
+                        // Idem — recriado a cada troca de aba, sem animação pra
+                        // não ser capturado a meio-caminho na exportação de PDF.
+                        animation: false,
                         interaction: { mode: 'index', intersect: false },
                         plugins: {
                             legend: {
@@ -9340,6 +9389,12 @@
 
             try {
                 // ── renderiza com html2canvas ──────────────────────────
+                // Zera a rolagem antes de medir/capturar pelo mesmo motivo do
+                // exportador de PDF: com a página rolada, o html2canvas pode
+                // duplicar uma faixa de conteúdo na "costura" do clone interno.
+                window.scrollTo(0, 0);
+                await new Promise(r => requestAnimationFrame(r));
+
                 const rect = target.getBoundingClientRect();
                 const targetW = Math.min(rect.width || target.scrollWidth, 1920);
                 const targetH = target.scrollHeight || rect.height;
@@ -9354,7 +9409,7 @@
                     windowWidth: targetW,
                     windowHeight: targetH,
                     scrollX: 0,
-                    scrollY: -window.scrollY
+                    scrollY: 0
                 });
 
                 const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
@@ -9451,6 +9506,212 @@
             toast.style.background = color;
             toast.classList.add('show');
             setTimeout(() => toast.classList.remove('show'), 3800);
+        }
+
+        // ── Exportar relatório de TODAS as abas em PDF ──────────────────────
+        // Percorre cada aba principal, força o render dela, captura com
+        // html2canvas e fatia o resultado em páginas A4 via jsPDF. Cada aba
+        // começa com uma página de título e volta para a aba original ao final.
+        const RP_TABS_PDF = [
+            { key: 'solinftec', id: 'main-solinftec', titulo: '📊 Análise Solinftec' },
+            { key: 'balance', id: 'main-balance', titulo: '🚜 Análise Balança' },
+            { key: 'densidade', id: 'main-densidade', titulo: '📦 Densidade de Carga' },
+            { key: 'controle', id: 'main-controle', titulo: '📈 Controle de Carga' },
+            { key: 'consumo', id: 'main-consumo', titulo: '⛽ Consumo' },
+            { key: 'liberacao', id: 'main-liberacao', titulo: '🔓 Controle de Liberação' },
+            { key: 'lab', id: 'main-lab', titulo: '🔬 Lab' },
+            { key: 'relproducao', id: 'main-relproducao', titulo: '📄 Rel. Produção' }
+        ];
+
+        // Troca de aba sem depender do "event" do clique (usado dentro do loop
+        // de exportação, chamado programaticamente).
+        function rpIrParaAba(tabKey) {
+            document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
+            const btnTab = document.querySelector(`.main-tab[onclick="switchMainTab('${tabKey}')"]`);
+            if (btnTab) btnTab.classList.add('active');
+            RP_TABS_PDF.forEach(t => { const el = document.getElementById(t.id); if (el) el.classList.remove('active'); });
+            const alvo = document.getElementById('main-' + tabKey);
+            if (alvo) alvo.classList.add('active');
+            const balHeaderTabs = document.getElementById('balance-tabs-header');
+            if (tabKey === 'relproducao') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderRelProducao(); }
+            else if (tabKey === 'balance') { if (balHeaderTabs) balHeaderTabs.style.display = 'flex'; }
+            else if (tabKey === 'controle') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderControle(); }
+            else if (tabKey === 'consumo') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderConsumo(); }
+            else if (tabKey === 'liberacao') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderLiberacao(); }
+            else if (tabKey === 'lab') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderLabTimeline(); renderLab(); }
+            else { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; }
+        }
+
+        // jsPDF, com as fontes padrão (Helvetica), só sabe desenhar texto em
+        // Latin-1/WinAnsi. Emojis (pares substitutos UTF-16, fora da faixa
+        // \u0000-\u00FF) não têm glifo nessa fonte e saem como lixo tipo
+        // "Ø=ÜÊ". Por isso tiramos qualquer caractere fora do Latin-1 antes
+        // de desenhar o título — mantém acentos (á, ã, ç...) e remove só o
+        // emoji e espaços sobrando.
+        function rpTituloParaPDF(titulo) {
+            return titulo.replace(/[^\x00-\xFF]/g, '').trim();
+        }
+
+        // Margem superior/esquerda usada tanto pelos títulos de aba quanto
+        // pelo início das imagens em páginas novas.
+        const RP_MARGEM_MM = 15;
+
+        // Fatia um canvas alto em pedaços que caibam na página A4, começando
+        // em "startYmm" (que pode estar no meio de uma página, logo após o
+        // título da aba anterior/atual) — só quebra página quando o espaço
+        // realmente acaba, em vez de sempre começar do topo. Isso evita
+        // sobra grande de espaço em branco entre o fim de uma aba e o
+        // título da próxima. Retorna o Y (mm) onde a última imagem terminou,
+        // para a próxima aba continuar a partir dali.
+        function rpAdicionarCanvasFluido(pdf, canvas, pageWmm, pageHmm, startYmm) {
+            const pxPerMm = canvas.width / pageWmm;
+            let renderedHpx = 0;
+            let y = startYmm;
+            while (renderedHpx < canvas.height) {
+                let availMm = pageHmm - y;
+                // Sobra menos de ~10mm na página: não vale a pena fatiar um
+                // filete minúsculo aqui, começa a próxima fatia numa página nova.
+                if (availMm < 10) {
+                    pdf.addPage();
+                    y = 0;
+                    availMm = pageHmm;
+                }
+                const sliceHpxMax = availMm * pxPerMm;
+                const sliceHpx = Math.min(sliceHpxMax, canvas.height - renderedHpx);
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width = canvas.width;
+                pageCanvas.height = sliceHpx;
+                const ctx = pageCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+                ctx.drawImage(canvas, 0, renderedHpx, canvas.width, sliceHpx, 0, 0, canvas.width, sliceHpx);
+                const imgData = pageCanvas.toDataURL('image/jpeg', 0.92);
+                const sliceHmm = (sliceHpx * pageWmm) / canvas.width;
+                pdf.addImage(imgData, 'JPEG', 0, y, pageWmm, sliceHmm);
+                renderedHpx += sliceHpx;
+                y += sliceHmm;
+            }
+            return y;
+        }
+
+        async function exportarRelatorioPDF() {
+            const btn = document.getElementById('btn-export-pdf');
+            const wrapper = document.getElementById('dashboardContent');
+            if (!wrapper || wrapper.classList.contains('hidden')) {
+                showToast('⚠️ Carregue os dados antes de exportar', '#dc2626');
+                return;
+            }
+            if (!window.jspdf || !window.jspdf.jsPDF) {
+                showToast('❌ Biblioteca de PDF não carregou (verifique a conexão).', '#dc2626');
+                return;
+            }
+
+            const textoOriginal = btn.innerHTML;
+            btn.disabled = true;
+
+            // Guarda a aba ativa atual para restaurar ao final.
+            const abaOriginal = document.querySelector('.main-tab-content.active');
+            const abaOriginalKey = abaOriginal ? abaOriginal.id.replace('main-', '') : 'solinftec';
+
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+            const pageWmm = pdf.internal.pageSize.getWidth();
+            const pageHmm = pdf.internal.pageSize.getHeight();
+            // Cursor Y contínuo (mm) — cada aba nova começa logo depois de
+            // onde a anterior terminou, em vez de sempre pular pra uma
+            // página em branco. Só quebra página quando falta espaço.
+            let cursorYmm = RP_MARGEM_MM;
+            let primeiraAba = true;
+
+            try {
+                for (const tab of RP_TABS_PDF) {
+                    btn.innerHTML = '⏳ Gerando PDF… (' + tab.titulo + ')';
+                    rpIrParaAba(tab.key);
+                    // renderControle() (aba "Controle de Carga") cria os gráficos
+                    // de % Mix e Volume por Hora dentro de um setTimeout(60) —
+                    // truque pra esperar o container ganhar altura real antes do
+                    // Chart.js medir o canvas. Só 2 frames de animação (~30ms) não
+                    // é tempo suficiente pra isso rodar: o resize()/captura abaixo
+                    // pegava esses gráficos ainda inexistentes ou recém-criados
+                    // com layout errado, saindo espremidos/em branco no PDF. Espera
+                    // um pouco mais, com folga, antes de seguir.
+                    await new Promise(r => setTimeout(r, 150));
+                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                    Object.values(charts).forEach(c => { try { c && c.resize(); } catch (e) { /* ignora */ } });
+                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+                    const target = document.getElementById(tab.id);
+                    if (!target) continue;
+
+                    // Oculta tabelas de detalhamento (caminhão/colhedoras) durante a captura.
+                    const tabelasDetalhamento = target.querySelectorAll('#consumo-caminhao-tabela, #consumo-colhedoras-tabela');
+                    tabelasDetalhamento.forEach(el => el.style.display = 'none');
+
+                    // Bloco de título da aba — reserva ~25mm. Se não couber
+                    // no que sobrou da página atual, aí sim quebra página.
+                    const ALTURA_TITULO_MM = 25;
+                    if (!primeiraAba && cursorYmm + ALTURA_TITULO_MM > pageHmm) {
+                        pdf.addPage();
+                        cursorYmm = RP_MARGEM_MM;
+                    }
+                    pdf.setFontSize(20);
+                    pdf.setTextColor(20, 20, 20);
+                    pdf.text(rpTituloParaPDF(tab.titulo), 15, cursorYmm + 10);
+                    pdf.setFontSize(10);
+                    pdf.setTextColor(120, 120, 120);
+                    pdf.text('Gerado em ' + new Date().toLocaleString('pt-BR'), 15, cursorYmm + 18);
+                    cursorYmm += ALTURA_TITULO_MM;
+                    primeiraAba = false;
+
+                    try {
+                        // Garante offset de rolagem zerado antes de medir/capturar —
+                        // se a página real estiver rolada, o html2canvas soma esse
+                        // deslocamento ao clonar o DOM em pedaços do tamanho da
+                        // janela, e o pedaço da "costura" pode acabar pintado duas
+                        // vezes (era a causa do "Filtrar" duplicado com uma faixa
+                        // cinza no meio, sempre bem no topo do que estava visível
+                        // no momento da rolagem).
+                        window.scrollTo(0, 0);
+                        await new Promise(r => requestAnimationFrame(r));
+
+                        const rect = target.getBoundingClientRect();
+                        const targetW = Math.min(rect.width || target.scrollWidth, 1920);
+                        const targetH = target.scrollHeight || rect.height;
+                        if (targetH > 0 && targetW > 0) {
+                            const canvas = await html2canvas(target, {
+                                backgroundColor: '#ffffff',
+                                scale: 2,
+                                useCORS: true,
+                                allowTaint: true,
+                                logging: false,
+                                width: targetW,
+                                height: targetH,
+                                windowWidth: targetW,
+                                windowHeight: targetH,
+                                scrollX: 0,
+                                scrollY: 0
+                            });
+                            cursorYmm = rpAdicionarCanvasFluido(pdf, canvas, pageWmm, pageHmm, cursorYmm);
+                        }
+                    } catch (errAba) {
+                        console.warn('Falha ao capturar aba', tab.key, errAba);
+                    } finally {
+                        tabelasDetalhamento.forEach(el => el.style.display = '');
+                    }
+                }
+
+                const nomeArquivo = 'relatorio-completo-agrosync-' +
+                    new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.pdf';
+                pdf.save(nomeArquivo);
+                showToast('📄 PDF de todas as abas exportado com sucesso!', '#16a34a');
+            } catch (err) {
+                console.warn('Exportação PDF:', err);
+                showToast('❌ Não foi possível gerar o PDF.', '#dc2626');
+            } finally {
+                rpIrParaAba(abaOriginalKey);
+                btn.disabled = false;
+                btn.innerHTML = textoOriginal;
+            }
         }
         // ═══════════════════════════════════════════════════════════════
 
