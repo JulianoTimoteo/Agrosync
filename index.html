@@ -1297,6 +1297,18 @@
             padding-left: 12px;
         }
 
+        @media (max-width: 1100px) {
+            .rp-grid-4 {
+                grid-template-columns: 1fr 1fr !important;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .rp-grid-4 {
+                grid-template-columns: 1fr !important;
+            }
+        }
+
         .h-bar-container {
             display: flex;
             flex-direction: column;
@@ -1343,6 +1355,80 @@
 
         .kpi-card.terc {
             border-bottom-color: #e9a23b;
+        }
+
+        /* Rel. Produção — fileira de status compacta (1 linha, cards pequenos) */
+        .rp-status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(95px, 1fr));
+            gap: 8px;
+        }
+
+        /* Rel. Produção — cabeçalho dos gráficos horários com input de meta */
+        .rp-chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        /* Rel. Produção — donut Própria × Fornecedor */
+        .rp-donut-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .rp-donut-stats {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+
+        @media (max-width: 640px) {
+            .rp-donut-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .rp-status-grid .kpi-card {
+            padding: 8px 6px;
+            border-radius: 8px;
+            border-bottom-width: 3px;
+            text-align: center;
+            cursor: default;
+            transition: transform .18s ease, box-shadow .18s ease;
+        }
+        .rp-status-grid .kpi-card:hover {
+            transform: scale(1.08);
+            box-shadow: 0 6px 18px rgba(0,0,0,.18);
+            z-index: 2;
+            position: relative;
+        }
+        .rp-status-grid .kpi-card.rp-status-ok {
+            background: var(--color-success-bg) !important;
+            border-bottom-color: var(--color-success) !important;
+        }
+        .rp-status-grid .kpi-card.rp-status-ok .val {
+            color: var(--color-success-text);
+        }
+        .rp-status-grid .kpi-card.rp-status-bad {
+            background: var(--color-danger-bg) !important;
+            border-bottom-color: var(--color-danger) !important;
+        }
+        .rp-status-grid .kpi-card.rp-status-bad .val {
+            color: var(--color-danger-text);
+        }
+        .rp-status-grid .kpi-card small {
+            font-size: 9px;
+            display: block;
+            margin-bottom: 4px;
+            line-height: 1.2;
+        }
+        .rp-status-grid .kpi-card .val {
+            font-size: 1.15rem !important;
+            font-weight: 800;
         }
 
         .kpi-card.rodotrem {
@@ -3485,6 +3571,9 @@
                     <button class="main-tab" onclick="switchMainTab('lab')">🔬 LAB<span
                             class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'lab')"
                             onmouseenter="showTabInfo(this,'lab')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('relproducao')">📄 REL. PRODUÇÃO<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'relproducao')"
+                            onmouseenter="showTabInfo(this,'relproducao')" onmouseleave="hideTabInfo()">ℹ️</span></button>
                 </div>
                 <div id="tab-info-popover"></div>
                 <div class="balance-tabs" id="balance-tabs-header" style="display:none; margin-bottom:0;">
@@ -4101,6 +4190,154 @@
                 <!-- ===== FIM CARGAS POR HORA / TURNO ===== -->
             </div>
 
+            <!-- ===== ABA REL. PRODUÇÃO ===== -->
+            <div id="main-relproducao" class="main-tab-content">
+                <div id="relproducao-no-data" style="text-align:center;padding:60px;color:#94a3b8;font-weight:700;font-size:14px;">
+                    ⏳ Carregue Producao.xlsx + METAS.xlsx + Potencial.xlsx para montar o relatório.
+                </div>
+                <div id="relproducao-content" style="display:none;">
+
+                    <!-- Cards principais: Realizado / Projeção / Meta -->
+                    <div class="kpi-grid" style="margin-bottom:16px; grid-template-columns:1fr 1fr 1fr;">
+                        <div class="kpi-card" id="rp-card-realizado" style="background:var(--color-bg-surface);">
+                            <small>✅ REALIZADO</small>
+                            <span class="val" id="rp-val-realizado" style="font-size:2rem; color:var(--color-text-primary);">0 t</span>
+                        </div>
+                        <div class="kpi-card" id="rp-card-projecao" style="background:var(--color-warning-bg); border-bottom-color:var(--color-warning);">
+                            <small>⏱️ PROJEÇÃO DE MOAGEM</small>
+                            <span class="val" id="rp-val-projecao" style="font-size:2rem; color:var(--color-warning-text);">0 t</span>
+                        </div>
+                        <div class="kpi-card" id="rp-card-meta" style="background:var(--color-success-bg); border-bottom-color:var(--color-success);">
+                            <small>🎯 META DE MOAGEM</small>
+                            <span class="val" id="rp-val-meta" style="font-size:2rem; color:var(--color-success-text);">0 t</span>
+                        </div>
+                    </div>
+
+                    <!-- Donut: Cana Própria × Fornecedor (coluna "Tipo Proprietario (F.A.)" do Producao.xlsx) -->
+                    <div class="balance-card" style="margin-bottom:16px;">
+                        <div class="balance-card-title">🥧 Entrada de Cana — Própria × Fornecedor</div>
+                        <div class="rp-donut-grid">
+                            <div>
+                                <div class="coa-chart-wrap" style="height:200px;">
+                                    <canvas id="rp-propterc-donut-canvas"></canvas>
+                                    <div class="coa-center-text">
+                                        <div class="coa-pct-value" id="rp-propterc-pct-center">—</div>
+                                        <div class="coa-pct-label">Própria</div>
+                                    </div>
+                                </div>
+                                <div class="coa-legend">
+                                    <div class="coa-legend-item">
+                                        <div class="coa-legend-dot" style="background:#40800c;"></div>
+                                        <span id="rp-propterc-legend-prop">Própria</span>
+                                    </div>
+                                    <div class="coa-legend-item">
+                                        <div class="coa-legend-dot" style="background:#e9a23b;"></div>
+                                        <span id="rp-propterc-legend-terc">Fornecedor</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rp-donut-stats">
+                                <div class="coa-stat" style="background:var(--color-primary-soft);">
+                                    <span class="coa-stat-val" style="color:var(--color-primary);" id="rp-propterc-total-prop">—</span>
+                                    <span class="coa-stat-lbl">Total Própria</span>
+                                </div>
+                                <div class="coa-stat" style="background:var(--color-secondary-soft);">
+                                    <span class="coa-stat-val" style="color:var(--color-secondary);" id="rp-propterc-total-terc">—</span>
+                                    <span class="coa-stat-lbl">Total Fornecedor</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Status de caminhões / RPM (último snapshot do Potencial.xlsx) + Análise COA -->
+                    <div class="balance-card" id="rp-status-wrap">
+                        <div class="balance-card-title">🚛 Status de Caminhões · Potencial.xlsx <span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;"></span></div>
+                        <div class="rp-status-grid" id="rp-status-grid" style="margin-top:10px;"></div>
+                    </div>
+
+                    <!-- Tabela grande por Frente -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📋 Frentes · Meta × Planejado × Realizado</div>
+                        <div class="table-container" style="margin-top:10px;">
+                            <table class="top10-table" id="rp-tabela-frentes" style="font-size:12px;">
+                                <thead><tr>
+                                    <th>Frente</th><th>F.Agr</th><th>Raio Médio</th><th>Meta 24h</th><th>Meta Hora</th>
+                                    <th>Planejado</th><th>Realizado</th><th>Diferença</th><th>Densidade</th>
+                                    <th>Viagens</th><th>Análise%</th><th>Projeção dia</th><th>Saldo 24H</th>
+                                </tr></thead>
+                                <tbody id="rp-tabela-frentes-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Produção Canavieiro + Raio Médio + Top rankings -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;margin-top:16px;" class="rp-grid-4">
+                        <div class="balance-card" style="display:flex;flex-direction:column;">
+                            <div class="balance-card-title">📊 Produção Canavieiro</div>
+                            <div style="flex:1;min-height:200px;position:relative;"><canvas id="rp-canvieiro-canvas"></canvas></div>
+                        </div>
+                        <div class="balance-card" style="display:flex;flex-direction:column;">
+                            <div class="balance-card-title">📊 Raio Médio</div>
+                            <div style="flex:1;min-height:200px;position:relative;"><canvas id="rp-raiomedio-canvas"></canvas></div>
+                        </div>
+                        <div class="balance-card">
+                            <div class="balance-card-title">🚛 Top Caminhões</div>
+                            <div class="table-container" style="margin-top:10px;"><table class="top10-table" id="rp-top-caminhoes"><tbody></tbody></table></div>
+                        </div>
+                        <div class="balance-card">
+                            <div class="balance-card-title">🚜 Top Colhedoras</div>
+                            <div class="table-container" style="margin-top:10px;"><table class="top10-table" id="rp-top-colhedoras"><tbody></tbody></table></div>
+                        </div>
+                    </div>
+
+                    <!-- Detalhe por Frente/Descrição/Densidade -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📦 Frente · Tipo de Veículo · Líquido · Densidade · Viagens</div>
+                        <div class="table-container" style="margin-top:10px;">
+                            <table class="top10-table" id="rp-tabela-detalhe" style="font-size:12px;">
+                                <thead><tr><th>Frente</th><th>Tipo</th><th>Líquido</th><th>Densidade</th><th>Viagens</th></tr></thead>
+                                <tbody id="rp-tabela-detalhe-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Gráficos horários -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">📊 Moagem Hora (Toneladas)</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <span id="rp-meta-moagem-hora-display" style="width:90px;padding:6px 8px;font-size:13px;font-weight:800;text-align:right;display:inline-block;color:var(--color-text-primary);">—</span>
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-moagem-hora-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">🌾 Potencial de Colheita</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <input id="rp-meta-potencial" type="number" min="0" step="1" oninput="rpAtualizarMeta('potencial', this.value)">
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-potencial-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">⚙️ Rotação da Moenda (RPM)</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <input id="rp-meta-rpm" type="number" min="0" step="0.1" oninput="rpAtualizarMeta('rpm', this.value)">
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-rpm-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📈 Disponibilidade — Transbordo / Colhedora / Caminhão</div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-disp-canvas"></canvas></div>
+                    </div>
+
+                </div>
+            </div>
+            <!-- ===== FIM ABA REL. PRODUÇÃO ===== -->
+
         </div><!-- /#dashboardContent -->
 
         <div id="statusMsg"></div>
@@ -4169,6 +4406,15 @@
 
         let balanceData = [];
         let selectedDay = "TODOS";
+        // ── Rel. Produção — Potencial.xlsx (aba "Planilha1": disponibilidades,
+        // potencial hora a hora, status de caminhões e RPM da moenda) ──────
+        let potencialData = {}; // { hora(6..23,0..5): {dispColh,dispTransb,dispCam,potencial,ida,campo,volta,filaExt,descarga,parado,carretas,rpm} }
+        let potencialLoaded = false;
+        // ── Rel. Produção — METAS.xlsx (metas por fazenda, agregadas por
+        // Frente — frentes com sufixo de letra, ex. "13B", são somadas
+        // à frente base "13") ────────────────────────────────────────────
+        let metasPorFrente = []; // [{frente, fa, raioMedio, meta24h}]
+        let metasLoaded = false;
         let solinftecData = { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
         let solinftecLoaded = false;
         let solinftecPeriodo = ''; // <-- período extraído do cabeçalho (dd/mm/aaaa)
@@ -4208,7 +4454,7 @@
             if (!balanceLoaded && !solinftecData) return;
             ['renderLab', 'renderBalance', 'renderBalanceTimeline', 'renderLabTimeline', 'renderPermanencia',
                 'renderHorariaChart', 'renderSolinftec', 'renderDensidade', 'renderDensidadeTimeline',
-                'renderControle', 'renderControleTimeline', 'renderConsumo'].forEach(tentar);
+                'renderControle', 'renderControleTimeline', 'renderConsumo', 'renderRelProducao'].forEach(tentar);
         }
 
         document.addEventListener('DOMContentLoaded', atualizarBotaoTema);
@@ -5081,7 +5327,8 @@
                         || tipoD.includes('FRETE') || tipoD.includes('TERCEIRO')
                         || tipoD.includes('FRETISTA') || tipoD.includes('FORNECEDOR');
                     if (!densMap.has(key)) {
-                        densMap.set(key, { dia, diaAgricola, hora: horaRaw, horaAgricola, frente, fCode, tipoCarga: tCarga, tipoNorm, viagem: viagemId, peso: 0, camProp: dIsProp, camTerc: dIsTerc, frota: frotaD });
+                        const colhD = String(r[idx.colh1] || '').trim();
+                        densMap.set(key, { dia, diaAgricola, hora: horaRaw, horaAgricola, frente, fCode, tipoCarga: tCarga, tipoNorm, viagem: viagemId, peso: 0, camProp: dIsProp, camTerc: dIsTerc, frota: frotaD, colh: colhD });
                     }
                     densMap.get(key).peso += peso;
                 }
@@ -5195,6 +5442,7 @@
             selectedDay = "TODOS";
             renderBalanceTimeline();
             renderBalance();
+            renderRelProducao();
             updateStatus();
         
             } catch (err) {
@@ -5626,7 +5874,7 @@
                 const btn = document.createElement('div');
                 btn.className = `day-badge ${selectedDay === id ? 'active' : ''}`;
                 btn.innerText = label;
-                btn.onclick = () => { selectedDay = id; renderBalance(); renderBalanceTimeline(); renderLabTimeline(); renderLab(); };
+                btn.onclick = () => { selectedDay = id; renderBalance(); renderBalanceTimeline(); renderLabTimeline(); renderLab(); renderRelProducao(); };
                 container.appendChild(btn);
             };
             addBtn("TODOS", "SAFRA COMPLETA");
@@ -6986,6 +7234,717 @@
             updateStatus();
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        //  REL. PRODUÇÃO — Potencial.xlsx (aba "Planilha1")
+        //  Colunas: Hora Escalar | Hora fixa | HORA | DISP COLHEDORA |
+        //  DISP TRANSBORDO | DISP CAMINHÕES | Potencial | Caminhões Ida |
+        //  Caminhões Campo | Caminhões Volta | Caminhões Fila externa |
+        //  Caminhões Descarga | Caminhões PARADO | CARRETAS CARREGADAS |
+        //  ROTAÇÃO DA MOENDA. Só as horas realmente preenchidas entram —
+        //  o restante do dia ainda não aconteceu / não foi lançado.
+        // ═══════════════════════════════════════════════════════════════
+        function processPotencialData(rows) {
+            try {
+                potencialData = {};
+                potencialLoaded = false;
+                if (!rows || rows.length < 2) return;
+                const headers = rows[0].map(h => normalize(h));
+                const idx = {
+                    horaFixa: headers.findIndex(h => h.includes('HORA') && h.includes('FIXA')),
+                    dispColh: headers.findIndex(h => h.includes('DISP') && h.includes('COLHED')),
+                    dispTransb: headers.findIndex(h => h.includes('DISP') && h.includes('TRANSB')),
+                    dispCam: headers.findIndex(h => h.includes('DISP') && h.includes('CAMINH')),
+                    potencial: headers.findIndex(h => h === 'POTENCIAL'),
+                    ida: headers.findIndex(h => h.includes('CAMINH') && h.includes('IDA')),
+                    campo: headers.findIndex(h => h.includes('CAMINH') && h.includes('CAMPO')),
+                    volta: headers.findIndex(h => h.includes('CAMINH') && h.includes('VOLTA')),
+                    filaExt: headers.findIndex(h => h.includes('CAMINH') && h.includes('FILA')),
+                    descarga: headers.findIndex(h => h.includes('CAMINH') && h.includes('DESCARGA')),
+                    parado: headers.findIndex(h => h.includes('CAMINH') && h.includes('PARADO')),
+                    carretas: headers.findIndex(h => h.includes('CARRETAS')),
+                    rpm: headers.findIndex(h => h.includes('ROTA') && h.includes('MOENDA'))
+                };
+                if (idx.horaFixa < 0 || idx.dispColh < 0) return; // aba/colunas não reconhecidas
+
+                const val = (r, i) => i >= 0 ? parseNum(r[i]) : null;
+                for (let i = 1; i < rows.length; i++) {
+                    const r = rows[i];
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const hora = parseInt(String(r[idx.horaFixa]).trim());
+                    if (isNaN(hora)) continue;
+                    // Gatilho de "hora preenchida" = coluna Caminhões Ida, porque colunas
+                    // calculadas (Disp./Potencial/RPM) podem já vir prontas para a hora
+                    // seguinte antes do lançamento manual dos status de caminhões.
+                    const idaRaw = idx.ida >= 0 ? r[idx.ida] : '';
+                    if (idaRaw === '' || idaRaw === null || idaRaw === undefined) continue; // hora ainda não preenchida
+                    potencialData[hora] = {
+                        dispColh: val(r, idx.dispColh), dispTransb: val(r, idx.dispTransb), dispCam: val(r, idx.dispCam),
+                        potencial: val(r, idx.potencial),
+                        ida: val(r, idx.ida), campo: val(r, idx.campo), volta: val(r, idx.volta),
+                        filaExt: val(r, idx.filaExt), descarga: val(r, idx.descarga), parado: val(r, idx.parado),
+                        carretas: val(r, idx.carretas), rpm: val(r, idx.rpm)
+                    };
+                }
+                potencialLoaded = Object.keys(potencialData).length > 0;
+            } catch (err) {
+                console.error('[processPotencialData] erro:', err);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  REL. PRODUÇÃO — METAS.xlsx (aba "Planilha1", metas por fazenda)
+        //  Agregado por Frente: Raio Médio = média do Raio ponderada pelo
+        //  Potencial de cada fazenda; Meta 24h = soma da coluna Meta.
+        //  Frentes com sufixo de letra (ex. "13B") são somadas na frente
+        //  base ("13") — confirmado batendo com o relatório em PDF.
+        // ═══════════════════════════════════════════════════════════════
+        function processMetasData(rows) {
+            try {
+                metasPorFrente = [];
+                metasLoaded = false;
+                if (!rows || rows.length < 2) return;
+                const headers = rows[0].map(h => normalize(h));
+                const idx = {
+                    frente: headers.findIndex(h => h === 'FRENTE'),
+                    fa: headers.findIndex(h => h.startsWith('F.A') || h === 'F A'),
+                    raio: headers.findIndex(h => h === 'RAIO'),
+                    potencial: headers.findIndex(h => h === 'POTENCIAL'),
+                    meta: headers.findIndex(h => h.startsWith('META'))
+                };
+                if (idx.frente < 0 || idx.meta < 0) return;
+
+                const porBase = new Map(); // frenteBase → {fa, raioW, pot, meta}
+                for (let i = 1; i < rows.length; i++) {
+                    const r = rows[i];
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const frenteRaw = String(r[idx.frente] || '').trim();
+                    if (!frenteRaw) continue;
+                    const frenteBase = frenteRaw.replace(/[A-Za-z]+$/, ''); // "13B" → "13"
+                    const fa = idx.fa >= 0 ? r[idx.fa] : null;
+                    const raio = parseNum(r[idx.raio]);
+                    const potencial = parseNum(r[idx.potencial]);
+                    const meta = parseNum(r[idx.meta]);
+                    if (!porBase.has(frenteBase)) porBase.set(frenteBase, { fa: null, raioW: 0, pot: 0, meta: 0 });
+                    const a = porBase.get(frenteBase);
+                    if (a.fa === null && fa !== null && fa !== '') a.fa = fa;
+                    a.raioW += raio * potencial;
+                    a.pot += potencial;
+                    a.meta += meta;
+                }
+                metasPorFrente = Array.from(porBase.entries()).map(([frente, a]) => ({
+                    frente,
+                    fa: a.fa,
+                    raioMedio: a.pot > 0 ? a.raioW / a.pot : 0,
+                    meta24h: a.meta
+                })).sort((a, b) => (parseInt(a.frente) || 0) - (parseInt(b.frente) || 0));
+                metasLoaded = metasPorFrente.length > 0;
+            } catch (err) {
+                console.error('[processMetasData] erro:', err);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  REL. PRODUÇÃO — junta METAS.xlsx + Potencial.xlsx + Producao.xlsx
+        //  num único relatório, no formato do PDF de referência.
+        // ═══════════════════════════════════════════════════════════════
+        function rpFCode(v) { return String(v || '').replace(/\D/g, '').padStart(2, '0'); }
+
+        function rpDadosDia() {
+            return selectedDay === 'TODOS' ? densidadeRaw : densidadeRaw.filter(d => d.diaAgricola === selectedDay);
+        }
+        function rpCoaDia() {
+            return selectedDay === 'TODOS' ? coaData : coaData.filter(d => d.dia === selectedDay);
+        }
+
+        // Última hora do ciclo (06→23,00→05) com dado preenchido no Potencial.xlsx
+        function rpUltimaHoraPotencial() {
+            const chaves = Object.keys(potencialData).map(Number);
+            if (!chaves.length) return null;
+            let melhor = null, melhorIdx = -1;
+            chaves.forEach(h => {
+                const idx = HORAS_CICLO.indexOf(h);
+                if (idx > melhorIdx) { melhorIdx = idx; melhor = h; }
+            });
+            return melhor;
+        }
+
+        function rpCalcPorFrente() {
+            const dados = rpDadosDia();
+            const porFrente = new Map(); // "08" → {peso, viagens}
+            dados.forEach(d => {
+                const k = rpFCode(d.fCode);
+                if (!porFrente.has(k)) porFrente.set(k, { peso: 0, viagens: 0 });
+                const a = porFrente.get(k); a.peso += d.peso; a.viagens++;
+            });
+
+            const coaDados = rpCoaDia();
+            const analisePorFrente = new Map();
+            coaDados.forEach(c => {
+                if (!c.frente) return;
+                const k = rpFCode(c.frente.replace('Frente', ''));
+                if (!analisePorFrente.has(k)) analisePorFrente.set(k, { sim: 0, total: 0 });
+                const a = analisePorFrente.get(k); a.total++; if (c.analisado) a.sim++;
+            });
+
+            const horasFechadas = getHorasFechadas();
+
+            return metasPorFrente.map(m => {
+                const k = rpFCode(m.frente);
+                const real = porFrente.get(k) || { peso: 0, viagens: 0 };
+                const an = analisePorFrente.get(k) || { sim: 0, total: 0 };
+                const metaHora = m.meta24h / 24;
+                const planejado = horasFechadas > 0 ? m.meta24h * (horasFechadas / 24) : 0;
+                const diferenca = real.peso - planejado;
+                const densidade = real.viagens > 0 ? real.peso / real.viagens : 0;
+                const analisePct = an.total > 0 ? (an.sim / an.total) * 100 : 0;
+                const projecaoDia = horasFechadas > 0 ? (real.peso / horasFechadas) * 24 : 0;
+                const saldo24h = projecaoDia - m.meta24h;
+                return {
+                    frente: k, fa: m.fa, raioMedio: m.raioMedio, meta24h: m.meta24h, metaHora,
+                    planejado, realizado: real.peso, diferenca, densidade, viagens: real.viagens,
+                    analisePct, projecaoDia, saldo24h
+                };
+            });
+        }
+
+        function rpCalcTop(campo) {
+            const dados = rpDadosDia();
+            const map = new Map();
+            dados.forEach(d => {
+                const cod = String(d[campo] || '').trim();
+                if (!cod) return;
+                map.set(cod, (map.get(cod) || 0) + d.peso);
+            });
+            return Array.from(map.entries()).map(([cod, peso]) => ({ cod, peso }))
+                .sort((a, b) => b.peso - a.peso).slice(0, 10);
+        }
+
+        // Gráfico de barras comparativo (2 categorias, ex.: Próprio × Terceiro).
+        // Sem borda nas barras (evita o contorno branco herdado do Chart.js no
+        // modo escuro) e com rótulo de valor acima de cada barra via datalabels.
+        function rpChartBarrasComparativo(canvas, { labels, valores, cores, formatarLabel, formatarTooltip }) {
+            return new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        data: valores,
+                        backgroundColor: cores,
+                        borderWidth: 0,
+                        borderRadius: 6,
+                        maxBarThickness: 64
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 22 } },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { display: false }
+                        },
+                        y: {
+                            display: false,
+                            beginAtZero: true,
+                            suggestedMax: Math.max(...valores) * 1.25 || 1
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                usePointStyle: true,
+                                pointStyle: 'circle',
+                                boxWidth: 8,
+                                boxHeight: 8,
+                                padding: 16,
+                                color: corDeTextoParaGrafico(),
+                                generateLabels: (chart) => labels.map((lbl, i) => ({
+                                    text: lbl,
+                                    fillStyle: cores[i],
+                                    strokeStyle: cores[i],
+                                    fontColor: corDeTextoParaGrafico(),
+                                    color: corDeTextoParaGrafico(),
+                                    pointStyle: 'circle',
+                                    hidden: false,
+                                    index: i
+                                }))
+                            }
+                        },
+                        tooltip: {
+                            callbacks: { label: (ctx) => ctx.label + ': ' + formatarTooltip(ctx.parsed.y) }
+                        },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'top',
+                            offset: 4,
+                            color: (ctx) => cores[ctx.dataIndex],
+                            font: { weight: '800', size: 13 },
+                            formatter: (v) => formatarLabel(v)
+                        }
+                    }
+                }
+            });
+        }
+
+        function rpCalcDetalhe() {
+            const dados = rpDadosDia();
+            const map = new Map(); // frente||owner||tipo → {frente,owner,tipo,peso,viagens}
+            dados.forEach(d => {
+                const owner = d.camTerc ? 'Terceiro' : 'Próprio';
+                const k = `${d.frente}||${owner}||${d.tipoNorm}`;
+                if (!map.has(k)) map.set(k, { frente: d.frente, fCode: d.fCode, owner, tipo: d.tipoNorm, peso: 0, viagens: 0 });
+                const a = map.get(k); a.peso += d.peso; a.viagens++;
+            });
+            return Array.from(map.values()).sort((a, b) => {
+                const fa = parseInt(a.fCode) || 0, fb = parseInt(b.fCode) || 0;
+                if (fa !== fb) return fa - fb;
+                return a.owner.localeCompare(b.owner);
+            });
+        }
+
+        function rpFmtNum(v, casas) {
+            return (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+        }
+
+        // Regras de faixa ideal para os indicadores do card "Status de Caminhões"
+        // (Potencial.xlsx, último snapshot). ok=true pinta o card de verde,
+        // ok=false pinta de vermelho. tooltip descreve a regra + valor atual.
+        const RP_STATUS_RULES = {
+            ida: { min: 10, max: 16, label: 'Ida' },
+            campo: { min: 15, max: 20, label: 'Campo' },
+            volta: { min: 10, max: 18, label: 'Volta' },
+            filaExt: { min: 5, max: 10, label: 'Fila Externa' },
+            descarga: { min: 6, max: 20, label: 'Descarga' },
+            carretas: { min: 5, max: 20, label: 'Carretas Carregadas' }
+        };
+        function rpStatusRuleInfo(key, v) {
+            if (v === null || v === undefined || isNaN(v)) return { ok: true, tooltip: 'Sem dado' };
+            if (key === 'parados') {
+                const ok = v <= 6;
+                return { ok, tooltip: `Parados: ${rpFmtNum(v, 0)} · ideal ≤ 5 (tolerância até 6) · acima de 6 = crítico` };
+            }
+            if (key === 'rpm') {
+                const ok = v >= 1101;
+                return { ok, tooltip: `RPM Moenda: ${rpFmtNum(v, 0)} · ideal ≥ 1.101 · abaixo de 1.100 = crítico` };
+            }
+            if (key === 'analisado') {
+                const ok = v >= 30.1;
+                return { ok, tooltip: `Analisado: ${rpFmtNum(v, 1)}% · ideal ≥ 30,1% · abaixo de 30% = crítico` };
+            }
+            const r = RP_STATUS_RULES[key];
+            if (!r) return { ok: true, tooltip: '' };
+            const ok = v >= r.min && v <= r.max;
+            return { ok, tooltip: `${r.label}: ${rpFmtNum(v, 0)} · faixa ideal ${r.min}–${r.max} · fora da faixa = crítico` };
+        }
+
+        function renderRelProducao() {
+            const noData = document.getElementById('relproducao-no-data');
+            const content = document.getElementById('relproducao-content');
+            if (!noData || !content) return;
+
+            if (!balanceLoaded || !metasLoaded) {
+                noData.style.display = 'block';
+                content.style.display = 'none';
+                let faltando = [];
+                if (!balanceLoaded) faltando.push('Producao.xlsx');
+                if (!metasLoaded) faltando.push('METAS.xlsx');
+                noData.innerHTML = '⏳ Carregue ' + faltando.join(' + ') + ' para montar o relatório.'
+                    + (!potencialLoaded ? '<br><span style="font-size:11px;">(Potencial.xlsx opcional — alimenta status de caminhões, RPM e disponibilidade)</span>' : '');
+                return;
+            }
+            noData.style.display = 'none';
+            content.style.display = 'block';
+
+            // ── Cards principais ──────────────────────────────────────────
+            const linhas = rpCalcPorFrente();
+            const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
+            document.getElementById('rp-val-realizado').innerText = fmtT(totalRealizado);
+            const proj = calcProjecaoMoagem();
+            document.getElementById('rp-val-projecao').innerText = fmtT(proj.projecao);
+            document.getElementById('rp-val-meta').innerText = fmtT(typeof metaMoagemDiaria === 'number' ? metaMoagemDiaria : 0);
+
+            // ── Status de caminhões (último snapshot do Potencial.xlsx) ────
+            const statusGrid = document.getElementById('rp-status-grid');
+            const statusHora = document.getElementById('rp-status-hora');
+            const h = rpUltimaHoraPotencial();
+            if (h !== null) {
+                const p = potencialData[h];
+                statusHora.innerText = '· hora ' + String(h).padStart(2, '0') + ':00';
+                const coaDados = rpCoaDia();
+                const analisado = coaDados.filter(c => c.analisado).length;
+                const totalCoa = coaDados.length;
+                const pctAnalisado = totalCoa > 0 ? (analisado / totalCoa) * 100 : 0;
+                const itens = [
+                    ['🚚 IDA', p.ida, 'ida'], ['🌾 CAMPO', p.campo, 'campo'], ['↩️ VOLTA', p.volta, 'volta'],
+                    ['⏳ FILA EXT.', p.filaExt, 'filaExt'], ['📤 DESCARGA', p.descarga, 'descarga'], ['🛑 PARADOS', p.parado, 'parados'],
+                    ['🚛 CARRETAS CARREGADAS', p.carretas, 'carretas'], ['⚙️ RPM MOENDA', p.rpm, 'rpm']
+                ];
+                statusGrid.innerHTML = itens.map(([label, v, key]) => {
+                    const r = rpStatusRuleInfo(key, v);
+                    const cls = v === null || v === undefined ? '' : (r.ok ? 'rp-status-ok' : 'rp-status-bad');
+                    return `<div class="kpi-card ${cls}" title="${r.tooltip}"><small>${label}</small><span class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</span></div>`;
+                }).join('')
+                    + (() => {
+                        const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
+                        return `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>🔬 ANALISADO</small><span class="val">${totalCoa}</span></div>`
+                            + `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>📊 % ANALISADOS</small><span class="val">${rpFmtNum(pctAnalisado, 1)}%</span></div>`;
+                    })();
+            } else {
+                statusHora.innerText = '';
+                statusGrid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#94a3b8;font-weight:700;padding:16px;">⏳ Carregue Potencial.xlsx para ver o status de caminhões e RPM.</div>';
+            }
+
+            // ── Tabela grande por frente ─────────────────────────────────
+            let somaMeta = 0, somaPlanejado = 0, somaReal = 0, somaViagens = 0, somaProjecao = 0, somaSaldo = 0, raioW = 0, densW = 0, analiseW = 0;
+            const corDiferenca = v => v >= 0 ? 'var(--color-success-text)' : 'var(--color-danger-text)';
+            const bodyRows = linhas.map(l => {
+                somaMeta += l.meta24h; somaPlanejado += l.planejado; somaReal += l.realizado;
+                somaViagens += l.viagens; somaProjecao += l.projecaoDia; somaSaldo += l.saldo24h;
+                raioW += l.raioMedio * l.meta24h; densW += l.densidade * l.viagens; analiseW += l.analisePct * l.meta24h;
+                return `<tr>
+                    <td><strong>${l.frente}</strong></td>
+                    <td>${l.fa || '—'}</td>
+                    <td>${rpFmtNum(l.raioMedio, 1)}</td>
+                    <td>${rpFmtNum(l.meta24h, 0)}</td>
+                    <td>${rpFmtNum(l.metaHora, 1)}</td>
+                    <td>${rpFmtNum(l.planejado, 0)}</td>
+                    <td>${rpFmtNum(l.realizado, 2)}</td>
+                    <td style="color:${corDiferenca(l.diferenca)};font-weight:800;">${l.diferenca >= 0 ? '▲' : '▼'} ${rpFmtNum(Math.abs(l.diferenca), 2)}</td>
+                    <td>${rpFmtNum(l.densidade, 2)}</td>
+                    <td>${l.viagens}</td>
+                    <td>${rpFmtNum(l.analisePct, 1)}%</td>
+                    <td>${rpFmtNum(l.projecaoDia, 2)}</td>
+                    <td style="color:${corDiferenca(l.saldo24h)};font-weight:800;">${l.saldo24h >= 0 ? '▲' : '▼'} ${rpFmtNum(Math.abs(l.saldo24h), 2)}</td>
+                </tr>`;
+            }).join('');
+            const totalRow = `<tr style="font-weight:800;background:var(--color-bg-surface-2, rgba(64,128,12,.08));">
+                <td colspan="2">TOTAL</td>
+                <td>${somaMeta > 0 ? rpFmtNum(raioW / somaMeta, 1) : '—'}</td>
+                <td>${rpFmtNum(somaMeta, 0)}</td>
+                <td>${rpFmtNum(somaMeta / 24, 1)}</td>
+                <td>${rpFmtNum(somaPlanejado, 0)}</td>
+                <td>${rpFmtNum(somaReal, 2)}</td>
+                <td style="color:${corDiferenca(somaReal - somaPlanejado)};">${rpFmtNum(somaReal - somaPlanejado, 2)}</td>
+                <td>${somaViagens > 0 ? rpFmtNum(densW / somaViagens, 2) : '—'}</td>
+                <td>${somaViagens}</td>
+                <td>${somaMeta > 0 ? rpFmtNum(analiseW / somaMeta, 1) : '—'}%</td>
+                <td>${rpFmtNum(somaProjecao, 2)}</td>
+                <td style="color:${corDiferenca(somaSaldo)};">${rpFmtNum(somaSaldo, 2)}</td>
+            </tr>`;
+            document.getElementById('rp-tabela-frentes-body').innerHTML = bodyRows + totalRow;
+
+            // ── Produção Canavieiro (Próprio × Terceiro) ────────────────
+            const dados = rpDadosDia();
+            const pesoProp = dados.filter(d => !d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const pesoTerc = dados.filter(d => d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const totalPT = pesoProp + pesoTerc;
+
+            // ── Donut Própria × Fornecedor (coluna "Tipo Proprietario (F.A.)") ──
+            const donutCanvas = document.getElementById('rp-propterc-donut-canvas');
+            if (charts['rp-propterc-donut']) { charts['rp-propterc-donut'].destroy(); delete charts['rp-propterc-donut']; }
+            const pctCenter = document.getElementById('rp-propterc-pct-center');
+            const totalPropEl = document.getElementById('rp-propterc-total-prop');
+            const totalTercEl = document.getElementById('rp-propterc-total-terc');
+            if (totalPropEl) totalPropEl.innerText = fmtT(pesoProp);
+            if (totalTercEl) totalTercEl.innerText = fmtT(pesoTerc);
+            if (pctCenter) pctCenter.innerText = totalPT > 0 ? rpFmtNum(pesoProp / totalPT * 100, 1) + '%' : '—';
+            if (donutCanvas) {
+                const donutData = totalPT > 0 ? [pesoProp, pesoTerc] : [0, 1];
+                const donutColors = totalPT > 0 ? ['#40800c', '#e9a23b'] : ['#cbd5e1', '#f1f5f9'];
+                charts['rp-propterc-donut'] = new Chart(donutCanvas.getContext('2d'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Própria', 'Fornecedor'],
+                        datasets: [{
+                            data: donutData,
+                            backgroundColor: donutColors,
+                            borderWidth: 3,
+                            borderColor: getToken('--color-bg-surface', '#ffffff')
+                        }]
+                    },
+                    options: {
+                        cutout: '60%',
+                        maintainAspectRatio: false,
+                        animation: { duration: 600 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => {
+                                        const val = ctx.raw;
+                                        const pct = totalPT > 0 ? (val / totalPT * 100).toFixed(1) : '0.0';
+                                        return ` ${ctx.label}: ${rpFmtNum(val, 2)} t (${pct}%)`;
+                                    }
+                                }
+                            },
+                            datalabels: {
+                                display: (ctx) => ctx.dataset.data[ctx.dataIndex] > 0 && totalPT > 0,
+                                formatter: (val) => (val / totalPT * 100).toFixed(1) + '%',
+                                color: corDeTextoParaGrafico(),
+                                font: { weight: '800', size: 12 },
+                                anchor: 'center',
+                                align: 'center'
+                            }
+                        }
+                    }
+                });
+            }
+
+            if (charts['rp-canvieiro']) { charts['rp-canvieiro'].destroy(); delete charts['rp-canvieiro']; }
+            const canvCanvieiro = document.getElementById('rp-canvieiro-canvas');
+            if (canvCanvieiro && totalPT > 0) {
+                const pctProp = pesoProp / totalPT * 100;
+                const pctTerc = pesoTerc / totalPT * 100;
+                charts['rp-canvieiro'] = rpChartBarrasComparativo(canvCanvieiro, {
+                    labels: ['Próprio %', 'Terceiro %'],
+                    valores: [pctProp, pctTerc],
+                    cores: ['#40800c', '#f59e0b'],
+                    formatarLabel: (v) => rpFmtNum(v, 2) + '%',
+                    formatarTooltip: (v) => rpFmtNum(v, 2) + '%'
+                });
+            }
+
+            // ── Raio Médio (Próprio × Terceiro) ──────────────────────────
+            if (charts['rp-raiomedio']) { charts['rp-raiomedio'].destroy(); delete charts['rp-raiomedio']; }
+            const canvRaioMedio = document.getElementById('rp-raiomedio-canvas');
+            if (canvRaioMedio && balanceLoaded) {
+                const dadosBalanco = selectedDay === 'TODOS' ? balanceData : balanceData.filter(d => d.dia === selectedDay);
+                const raioPropArr = dadosBalanco.filter(d => d.camProp && d.raio > 0).map(d => d.raio);
+                const raioTercArr = dadosBalanco.filter(d => d.camTerc && d.raio > 0).map(d => d.raio);
+                const raioPropMedio = avg(raioPropArr);
+                const raioTercMedio = avg(raioTercArr);
+                if (raioPropMedio > 0 || raioTercMedio > 0) {
+                    charts['rp-raiomedio'] = rpChartBarrasComparativo(canvRaioMedio, {
+                        labels: ['Terceiro', 'Próprio'],
+                        valores: [raioTercMedio, raioPropMedio],
+                        cores: ['#f59e0b', '#40800c'],
+                        formatarLabel: (v) => rpFmtNum(v, 2) + ' km',
+                        formatarTooltip: (v) => rpFmtNum(v, 2) + ' km'
+                    });
+                }
+            }
+
+            // ── Top Caminhões / Top Colhedoras ──────────────────────────
+            const rankHtml = (arr) => arr.map((r, i) => {
+                const rank = i + 1;
+                const cls = rank <= 3 ? `rank-${rank}` : 'rank-n';
+                return `<tr><td><span class="top10-rank ${cls}">${rank}</span></td><td><strong>${r.cod}</strong></td><td style="text-align:right;">${rpFmtNum(r.peso, 2)} t</td></tr>`;
+            }).join('') || '<tr><td colspan="3" style="text-align:center;color:#94a3b8;">Sem dados</td></tr>';
+            document.getElementById('rp-top-caminhoes').querySelector('tbody').innerHTML = rankHtml(rpCalcTop('frota'));
+            document.getElementById('rp-top-colhedoras').querySelector('tbody').innerHTML = rankHtml(rpCalcTop('colh'));
+
+            // ── Detalhe por Frente/Tipo ──────────────────────────────────
+            // Densidade colorida seguindo a mesma regra do resto do programa
+            // (getDensidadeMensagem), aplicada apenas às linhas Própria/Próprio.
+            const detalhe = rpCalcDetalhe();
+            document.getElementById('rp-tabela-detalhe-body').innerHTML = detalhe.map(d => {
+                const densidade = d.viagens > 0 ? d.peso / d.viagens : 0;
+                const isPropria = d.owner === 'Próprio';
+                let densCellStyle = '';
+                if (isPropria && d.viagens > 0) {
+                    const info = getDensidadeMensagem(densidade, d.viagens);
+                    const cor = info.class === 'densidade-ruim' ? 'var(--color-danger-text)'
+                        : info.class === 'densidade-mediano' ? 'var(--color-warning-text)'
+                        : 'var(--color-success-text)';
+                    densCellStyle = ` style="color:${cor};font-weight:800;"`;
+                }
+                return `<tr><td><strong>${d.frente}</strong></td><td>${d.owner} · ${d.tipo}</td><td>${rpFmtNum(d.peso, 2)} t</td><td${densCellStyle}>${rpFmtNum(densidade, 2)}</td><td>${d.viagens}</td></tr>`;
+            }).join('') || '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">Sem dados</td></tr>';
+
+            // ── Gráficos horários ────────────────────────────────────────
+            rpRenderGraficosHorarios();
+        }
+
+        function rpRenderGraficosHorarios() {
+            const HORAS = HORAS_CICLO;
+            const LABELS = HORAS.map(hh => String(hh).padStart(2, '0') + ':00');
+            const corVerm = getToken('--color-danger', '#dc2626');
+            const corTxt = corDeTextoParaGrafico();
+            const escuro = document.documentElement.getAttribute('data-theme') === 'dark';
+            // Pílula de valor em cima da coluna: fundo preto/texto branco no modo
+            // claro, invertido (fundo branco/texto preto) no modo escuro — sempre
+            // com contraste alto, independente da cor da barra.
+            const pilulaBg = escuro ? '#ffffff' : '#000000';
+            const pilulaCor = escuro ? '#000000' : '#ffffff';
+            const rpDatalabels = (casas) => ({
+                display: (ctx) => { const v = ctx.dataset.data[ctx.dataIndex]; return v !== null && v !== undefined && v !== 0; },
+                anchor: 'end',
+                align: 'top',
+                offset: 2,
+                backgroundColor: pilulaBg,
+                color: pilulaCor,
+                borderRadius: 4,
+                padding: { top: 3, bottom: 3, left: 6, right: 6 },
+                font: { weight: '800', size: 10 },
+                formatter: (v) => rpFmtNum(v, casas)
+            });
+
+            // Colore as barras: vermelho abaixo da meta, cor normal na meta ou acima.
+            const rpCorBarras = (arr, metaVal, corOk) => arr.map(v => {
+                if (v === null || v === undefined) return 'transparent';
+                if (metaVal === null || metaVal === undefined || isNaN(metaVal) || metaVal <= 0) return corOk;
+                return v < metaVal ? corVerm : corOk;
+            });
+
+            // Plugin genérico: desenha uma linha tracejada horizontal na altura da meta.
+            const rpMetaLinePlugin = (getMeta, cor) => ({
+                id: 'rpMetaLine',
+                afterDatasetsDraw(chart) {
+                    const meta = getMeta();
+                    if (meta === null || meta === undefined || isNaN(meta) || meta <= 0) return;
+                    const { ctx, scales: { x, y } } = chart;
+                    if (!x || !y) return;
+                    const yPos = y.getPixelForValue(meta);
+                    if (yPos < y.top || yPos > y.bottom) return;
+                    ctx.save();
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(x.left, yPos);
+                    ctx.lineTo(x.right, yPos);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = cor;
+                    ctx.font = 'bold 11px "Plus Jakarta Sans", sans-serif';
+                    ctx.textAlign = 'right';
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillText('META ' + rpFmtNum(meta, meta % 1 === 0 ? 0 : 1), x.right - 4, yPos - 4);
+                    ctx.restore();
+                }
+            });
+
+            // ── Moagem Hora — meta automática = META DE MOAGEM (t) / 24 ──────
+            const canvMoagem = document.getElementById('rp-moagem-hora-canvas');
+            const metaMoagemHora = (typeof metaMoagemDiaria === 'number' && metaMoagemDiaria > 0) ? metaMoagemDiaria / 24 : null;
+            const metaMoagemDisplay = document.getElementById('rp-meta-moagem-hora-display');
+            if (metaMoagemDisplay) metaMoagemDisplay.innerText = metaMoagemHora !== null ? rpFmtNum(metaMoagemHora, 1) : '—';
+            if (canvMoagem) {
+                const totalPorHora = getTotalPorHoraArray().map(v => v > 0 ? parseFloat(v.toFixed(2)) : 0);
+                if (charts['rp-moagem-hora']) { charts['rp-moagem-hora'].destroy(); delete charts['rp-moagem-hora']; }
+                charts['rp-moagem-hora'] = new Chart(canvMoagem.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ label: 'Toneladas', data: totalPorHora, backgroundColor: rpCorBarras(totalPorHora, metaMoagemHora, '#40800c'), borderRadius: 3, datalabels: rpDatalabels(1) }] },
+                    plugins: [rpMetaLinePlugin(() => metaMoagemHora, '#3b82f6')],
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        layout: { padding: { top: 26, right: 60 } },
+                        scales: {
+                            x: { ticks: { color: corTxt } },
+                            y: { ticks: { color: corTxt } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+
+            // Potencial de Colheita / Rotação da Moenda / Disponibilidade — vêm do Potencial.xlsx
+            const potArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].potencial : null);
+            const rpmArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].rpm : null);
+            const dispColhArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispColh * 100 : null);
+            const dispTransbArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispTransb * 100 : null);
+            const dispCamArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispCam * 100 : null);
+
+            // ── Potencial de Colheita — meta ajustável pelo usuário ──────────
+            if (rpMetas.potencial === null) {
+                const validos = potArr.filter(v => v !== null && v > 0);
+                rpMetas.potencial = validos.length ? Math.round(avg(validos)) : null;
+            }
+            const inputPot = document.getElementById('rp-meta-potencial');
+            if (inputPot && document.activeElement !== inputPot) inputPot.value = rpMetas.potencial !== null ? rpMetas.potencial : '';
+            const canvPot = document.getElementById('rp-potencial-canvas');
+            if (canvPot) {
+                if (charts['rp-potencial']) { charts['rp-potencial'].destroy(); delete charts['rp-potencial']; }
+                charts['rp-potencial'] = new Chart(canvPot.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ label: 'Potencial', data: potArr, backgroundColor: rpCorBarras(potArr, rpMetas.potencial, '#3b82f6'), borderRadius: 3, datalabels: rpDatalabels(0) }] },
+                    plugins: [rpMetaLinePlugin(() => rpMetas.potencial, '#f59e0b')],
+                    options: {
+                        responsive: true, maintainAspectRatio: false, spanGaps: false,
+                        layout: { padding: { top: 26, right: 60 } },
+                        scales: {
+                            x: { ticks: { color: corTxt } },
+                            y: { ticks: { color: corTxt } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+
+            // ── Rotação da Moenda (RPM) — meta ajustável pelo usuário ────────
+            if (rpMetas.rpm === null) {
+                const validos = rpmArr.filter(v => v !== null && v > 0);
+                rpMetas.rpm = validos.length ? Math.round(avg(validos) * 10) / 10 : null;
+            }
+            const inputRpm = document.getElementById('rp-meta-rpm');
+            if (inputRpm && document.activeElement !== inputRpm) inputRpm.value = rpMetas.rpm !== null ? rpMetas.rpm : '';
+            const canvRpm = document.getElementById('rp-rpm-canvas');
+            if (canvRpm) {
+                if (charts['rp-rpm']) { charts['rp-rpm'].destroy(); delete charts['rp-rpm']; }
+                charts['rp-rpm'] = new Chart(canvRpm.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ label: 'RPM', data: rpmArr, backgroundColor: rpCorBarras(rpmArr, rpMetas.rpm, '#8b5cf6'), borderRadius: 3, datalabels: rpDatalabels(0) }] },
+                    plugins: [rpMetaLinePlugin(() => rpMetas.rpm, '#f59e0b')],
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        layout: { padding: { top: 26, right: 60 } },
+                        scales: {
+                            x: { ticks: { color: corTxt } },
+                            y: { ticks: { color: corTxt } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+            const canvDisp = document.getElementById('rp-disp-canvas');
+            if (canvDisp) {
+                if (charts['rp-disp']) { charts['rp-disp'].destroy(); delete charts['rp-disp']; }
+                const corNo = escuro ? '#ffffff' : '#000000';
+                const rpDispDatalabels = {
+                    display: (ctx) => { const v = ctx.dataset.data[ctx.dataIndex]; return v !== null && v !== undefined; },
+                    align: 'top',
+                    anchor: 'end',
+                    offset: 4,
+                    color: corNo,
+                    font: { weight: '800', size: 10 },
+                    formatter: (v) => Math.round(v) + '%'
+                };
+                charts['rp-disp'] = new Chart(canvDisp.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: LABELS,
+                        datasets: [
+                            { label: 'Disp. Colhedora', data: dispColhArr, borderColor: '#40800c', backgroundColor: '#40800c', tension: .3, datalabels: rpDispDatalabels },
+                            { label: 'Disp. Transbordo', data: dispTransbArr, borderColor: '#f59e0b', backgroundColor: '#f59e0b', tension: .3, datalabels: rpDispDatalabels },
+                            { label: 'Disp. Caminhão', data: dispCamArr, borderColor: '#3b82f6', backgroundColor: '#3b82f6', tension: .3, datalabels: rpDispDatalabels }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, spanGaps: false,
+                        layout: { padding: { top: 20 } },
+                        scales: {
+                            y: { ticks: { callback: v => v + '%', color: corTxt } },
+                            x: { ticks: { color: corTxt } }
+                        },
+                        plugins: {
+                            legend: { labels: { color: corTxt } }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Estado das metas ajustáveis manualmente (Potencial / RPM). A meta de
+        // Moagem Hora é sempre automática = META DE MOAGEM / 24 (não editável).
+        let rpMetas = { potencial: null, rpm: null };
+        function rpAtualizarMeta(chave, valor) {
+            const v = parseFloat(String(valor).replace(',', '.'));
+            rpMetas[chave] = isNaN(v) ? null : v;
+            rpRenderGraficosHorarios();
+        }
+
         function openDensidadeModal(label, rows) {
             const modal = document.getElementById('detail-modal');
             const title = document.getElementById('modal-title');
@@ -7156,7 +8115,8 @@
             controle: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Entrada de cana por hora, agregada por frente e por Próprio/Terceiro.',
             consumo: '📄 Fontes de dados: <strong>ConsumoCanavieiros.xls / ConsumoColhedoras.xls</strong> (relatório GAtec — Índices Operacionais)<br>+ <strong>CAMINHÃO.xlsx / Colhedoras.xlsx</strong> (classificação de frota).',
             liberacao: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Colunas Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente, extraídas do mesmo relatório de balança.',
-            lab: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Análise COA (coluna Analisado) cruzada com Hora/Turno e Frente do mesmo relatório de balança.'
+            lab: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Análise COA (coluna Analisado) cruzada com Hora/Turno e Frente do mesmo relatório de balança.',
+            relproducao: '📄 Fontes de dados: <strong>METAS.xlsx</strong> (Frente/F.Agr/Raio Médio/Meta 24h, por fazenda) + <strong>Potencial.xlsx</strong> (disponibilidades, potencial hora a hora e RPM da moenda) + <strong>Producao.xlsx</strong> (Realizado, Densidade, Análise%, Top Caminhões/Colhedoras).<br>Planejado/Projeção/Saldo 24H são calculados a partir das horas já fechadas do dia agrícola.'
         };
 
         function showTabInfo(el, tab) {
@@ -7195,11 +8155,15 @@
         function switchMainTab(tab) {
             document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
-            ['main-solinftec', 'main-balance', 'main-densidade', 'main-controle', 'main-consumo', 'main-liberacao', 'main-lab'].forEach(id => {
+            ['main-solinftec', 'main-balance', 'main-densidade', 'main-controle', 'main-consumo', 'main-liberacao', 'main-lab', 'main-relproducao'].forEach(id => {
                 const el = document.getElementById(id); if (el) el.classList.remove('active');
             });
             const balHeaderTabs = document.getElementById('balance-tabs-header');
-            if (tab === 'solinftec') {
+            if (tab === 'relproducao') {
+                document.getElementById('main-relproducao').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+                renderRelProducao();
+            } else if (tab === 'solinftec') {
                 document.getElementById('main-solinftec').classList.add('active');
                 if (balHeaderTabs) balHeaderTabs.style.display = 'none';
             } else if (tab === 'balance') {
@@ -7989,15 +8953,25 @@
             const n = normalizeFileName(name);
             return n === 'solinftec.xlsx' || n === 'solinftec.csv' || n === 'solinftec.xls';
         }
+        function isPotencialFile(name) {
+            const n = normalizeFileName(name);
+            return n === 'potencial.xlsx' || n === 'potencial.csv' || n === 'potencial.xls';
+        }
+        function isMetasFile(name) {
+            const n = normalizeFileName(name);
+            return n === 'metas.xlsx' || n === 'metas.csv' || n === 'metas.xls';
+        }
 
         // Lê e processa os arquivos de um FileSystemDirectoryHandle
         async function loadFromDirHandle(dirHandle) {
-            const results = { producao: null, solinftec: null, name: dirHandle.name };
+            const results = { producao: null, solinftec: null, potencial: null, metas: null, name: dirHandle.name };
             consumoResetArquivos(); // novo módulo CONSUMO: limpa arquivos anteriores
             for await (const [name, fh] of dirHandle.entries()) {
                 if (fh.kind !== 'file') continue;
                 if (isProducaoFile(name)) results.producao = await fh.getFile();
                 if (isSolinftecFile(name)) results.solinftec = await fh.getFile();
+                if (isPotencialFile(name)) results.potencial = await fh.getFile();
+                if (isMetasFile(name)) results.metas = await fh.getFile();
                 const tipoConsumo = consumoIdentificarArquivo(name); // novo módulo CONSUMO
                 if (tipoConsumo) consumoArquivos[tipoConsumo] = await fh.getFile();
             }
@@ -8038,7 +9012,27 @@
             });
         }
 
-        async function processFiles(producaoFile, solinftecFile) {
+        // Lê uma aba específica pelo nome (por posição, do arquivo binário) —
+        // necessário para Potencial.xlsx, cuja aba de cálculo ("Planilha1")
+        // não é a primeira do arquivo (a 1ª é "Potencial", só disponibilidades
+        // fixas). Se a aba pedida não existir, cai para a última aba do
+        // arquivo (mais robusto a pequenas variações de nome/acentuação).
+        function readXlsxNamedSheet(file, sheetName) {
+            return new Promise((res) => {
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const data = new Uint8Array(evt.target.result);
+                    const wb = XLSX.read(data, { type: 'array', raw: true });
+                    const nomeReal = wb.SheetNames.find(n => normalizeFileName(n) === normalizeFileName(sheetName))
+                        || wb.SheetNames[wb.SheetNames.length - 1];
+                    const json = XLSX.utils.sheet_to_json(wb.Sheets[nomeReal], { header: 1, defval: '' });
+                    res(json);
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        async function processFiles(producaoFile, solinftecFile, potencialFile, metasFile) {
             try {
                 if (producaoFile) {
                     const json = await readXlsxFile(producaoFile, true);
@@ -8057,7 +9051,26 @@
                 console.error('[processFiles] Erro ao processar Solinftec.xlsx:', err);
                 showToast('⚠️ Erro ao processar Solinftec.xlsx: ' + err.message, '#dc2626');
             }
+            try {
+                if (potencialFile) {
+                    const json = await readXlsxNamedSheet(potencialFile, 'Planilha1');
+                    processPotencialData(json);
+                }
+            } catch (err) {
+                console.error('[processFiles] Erro ao processar Potencial.xlsx:', err);
+                showToast('⚠️ Erro ao processar Potencial.xlsx: ' + err.message, '#dc2626');
+            }
+            try {
+                if (metasFile) {
+                    const json = await readXlsxNamedSheet(metasFile, 'Planilha1');
+                    processMetasData(json);
+                }
+            } catch (err) {
+                console.error('[processFiles] Erro ao processar METAS.xlsx:', err);
+                showToast('⚠️ Erro ao processar METAS.xlsx: ' + err.message, '#dc2626');
+            }
             updateStatus();
+            renderRelProducao();
         }
 
         function setAutoBanner(msg, done = false) {
@@ -8081,9 +9094,9 @@
         // Lê os arquivos de um handle já autorizado e monta o dashboard
         async function carregarHandleAutomaticamente(handle) {
             setAutoBanner(`⏳ Lendo arquivos de "${handle.name}"…`);
-            const { producao, solinftec, name } = await loadFromDirHandle(handle);
+            const { producao, solinftec, potencial, metas, name } = await loadFromDirHandle(handle);
             showDashboard(name);
-            await processFiles(producao, solinftec);
+            await processFiles(producao, solinftec, potencial, metas);
             await processConsumoFiles(); // novo módulo CONSUMO
             espelhoPublicarTudo(name); // publica no Firestore p/ Modo Espectador
             autoRefreshIniciar(handle, name);
@@ -8172,9 +9185,9 @@
                     const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
                     await saveHandle(dirHandle); // persiste para próxima vez
                     setAutobanner_off();
-                    const { producao, solinftec, name } = await loadFromDirHandle(dirHandle);
+                    const { producao, solinftec, potencial, metas, name } = await loadFromDirHandle(dirHandle);
                     showDashboard(name);
-                    await processFiles(producao, solinftec);
+                    await processFiles(producao, solinftec, potencial, metas);
                     await processConsumoFiles(); // novo módulo CONSUMO
                     espelhoPublicarTudo(name); // publica no Firestore p/ Modo Espectador
                     autoRefreshIniciar(dirHandle, name);
@@ -8197,12 +9210,14 @@
                 showDashboard(folderName);
                 const producaoFile = files.find(f => isProducaoFile(f.name));
                 const solinftecFile = files.find(f => isSolinftecFile(f.name));
+                const potencialFile = files.find(f => isPotencialFile(f.name));
+                const metasFile = files.find(f => isMetasFile(f.name));
                 consumoResetArquivos(); // novo módulo CONSUMO
                 files.forEach(f => {
                     const tipoConsumo = consumoIdentificarArquivo(f.name);
                     if (tipoConsumo && !consumoArquivos[tipoConsumo]) consumoArquivos[tipoConsumo] = f;
                 });
-                await processFiles(producaoFile, solinftecFile);
+                await processFiles(producaoFile, solinftecFile, potencialFile, metasFile);
                 await processConsumoFiles(); // novo módulo CONSUMO
                 espelhoPublicarTudo(folderName); // publica no Firestore p/ Modo Espectador
             };
@@ -8254,9 +9269,9 @@
                     perm = await autoRefreshHandleAtual.requestPermission({ mode: 'read' });
                     if (perm !== 'granted') { autoRefreshEmAndamento = false; autoRefreshAtualizarBadge(); return; }
                 }
-                const { producao, solinftec, name } = await loadFromDirHandle(autoRefreshHandleAtual);
+                const { producao, solinftec, potencial, metas, name } = await loadFromDirHandle(autoRefreshHandleAtual);
                 autoRefreshNomeAtual = name;
-                await processFiles(producao, solinftec);
+                await processFiles(producao, solinftec, potencial, metas);
                 await processConsumoFiles();
                 espelhoPublicarTudo(name);
                 if (typeof showToast === 'function') showToast('🔄 Dados atualizados automaticamente', '#16a34a');
