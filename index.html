@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AgroSync | Análise de Dados</title>
     <link rel="icon" type="image/png"
         href="https://usinapitangueiras.com.br/wp-content/uploads/2020/10/cropped-favicon-180x180.png">
@@ -1364,6 +1364,87 @@
             grid-template-columns: repeat(auto-fit, minmax(95px, 1fr));
             gap: 8px;
         }
+
+        /* ═══════════════════════════════════════════════════════════════
+           CLONE do PDF de referência (Rel. Produção) — usado só na hora de
+           exportar. Fica fora da tela (position:fixed, left negativo) o
+           tempo todo; só é populado e capturado durante a exportação.
+           Cores/estrutura seguem o relatório modelo enviado pelo usuário:
+           banner azul, 3 cards brancos, cards verdes de status, tabela
+           verde/branca com setas, gráficos com moldura verde.
+           ═══════════════════════════════════════════════════════════════ */
+        #rp-pdf-clone {
+            position: fixed;
+            left: -100000px;
+            top: 0;
+            width: 1500px;
+            background: #eef3f7;
+            padding: 16px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            color: #1a1a1a;
+            box-sizing: border-box;
+        }
+        #rp-pdf-clone * { box-sizing: border-box; }
+        .clone-header {
+            background: linear-gradient(135deg, #4fa8de, #1b4f72);
+            border-radius: 10px;
+            padding: 14px 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .clone-header .logo-badge {
+            width: 56px; height: 56px; border-radius: 50%; background: #fff;
+            display: flex; align-items: center; justify-content: center; font-size: 28px;
+            flex-shrink: 0;
+        }
+        .clone-header .titulo-usina {
+            color: #fff; font-size: 24px; font-weight: 900; letter-spacing: .5px;
+        }
+        .clone-kpi-row {
+            display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;
+        }
+        .clone-kpi-card {
+            background: #fff; border-radius: 8px; padding: 12px; text-align: center;
+            box-shadow: 0 1px 4px rgba(0,0,0,.15);
+        }
+        .clone-kpi-card .clone-kpi-label { font-size: 12px; font-weight: 800; letter-spacing: .4px; color: #222; }
+        .clone-kpi-card .clone-kpi-val { font-size: 26px; font-weight: 900; margin-top: 6px; color: #111; }
+        .clone-status-row {
+            display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px; margin-bottom: 10px;
+        }
+        .clone-status-card {
+            background: #1f6e3d; border-radius: 8px; padding: 8px 4px; text-align: center; color: #fff;
+        }
+        .clone-status-card.bad { background: #a52a2a; }
+        .clone-status-card .lbl { font-size: 9px; font-weight: 800; letter-spacing: .3px; opacity: .95; }
+        .clone-status-card .val { font-size: 18px; font-weight: 900; margin-top: 3px; }
+        .clone-panel {
+            background: #fff; border-radius: 8px; padding: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.1);
+            margin-bottom: 10px;
+        }
+        .clone-panel-title {
+            font-size: 12px; font-weight: 800; letter-spacing: .3px; margin-bottom: 8px; color: #1f6e3d;
+            text-transform: uppercase;
+        }
+        .clone-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+        .clone-table th {
+            background: #1f6e3d; color: #fff; font-weight: 800; padding: 5px 4px; text-align: left;
+            white-space: nowrap;
+        }
+        .clone-table td { padding: 4px; border-bottom: 1px solid #e4ece6; white-space: nowrap; }
+        .clone-table tr:nth-child(even) td { background: #f2f9f4; }
+        .clone-table tr.total-row td { background: #d9ecdf; font-weight: 900; border-top: 2px solid #1f6e3d; }
+        .clone-mini-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        .clone-chart-card {
+            border: 3px solid #1f6e3d; border-radius: 8px; overflow: hidden; margin-bottom: 10px; background: #fff;
+        }
+        .clone-chart-card .clone-chart-title {
+            background: #1f6e3d; color: #fff; font-size: 13px; font-weight: 900; letter-spacing: .5px;
+            padding: 7px 12px; text-align: center; text-transform: uppercase;
+        }
+        .clone-chart-card .clone-chart-body { padding: 10px; }
 
         /* Rel. Produção — cabeçalho dos gráficos horários com input de meta */
         .rp-chart-header {
@@ -3415,219 +3496,6 @@
         }
 
     </style>
-<!-- ═══════════════════════════════════════════════════════════════════
-         CAMADA RESPONSIVA MOBILE/TABLET (media queries no mesmo arquivo)
-         ───────────────────────────────────────────────────────────────────
-         Este bloco cobre phones e tablets dentro deste MESMO arquivo — não há
-         um segundo arquivo. HTML, JavaScript, cálculos, integrações e regras
-         de negócio são únicos — apenas a
-         apresentação visual é adaptada aqui para telas de toque.
-         Usa !important de forma pontual apenas onde é necessário sobrepor
-         estilos inline (style="grid-template-columns:...") já existentes
-         no HTML, sem tocar em nenhuma linha de JavaScript.
-         ═══════════════════════════════════════════════════════════════════ -->
-    <style>
-        /* Nunca permitir scroll horizontal da página inteira — só em telas
-           pequenas; em desktop isso interferia na captura de tela
-           (html2canvas), então fica restrito ao breakpoint mobile/tablet. */
-        @media (max-width: 1023px) {
-            html, body {
-                overflow-x: hidden;
-                max-width: 100vw;
-            }
-
-            body {
-                padding-left: env(safe-area-inset-left);
-                padding-right: env(safe-area-inset-right);
-            }
-
-            .header h1 {
-                font-size: clamp(15px, 4.2vw, 22px) !important;
-            }
-        }
-
-        /* ── Header: empilha e dá alvo de toque confortável (≥44px) ── */
-        @media (max-width: 900px) {
-            .header {
-                padding: 14px 16px;
-                flex-direction: column;
-                align-items: stretch;
-                gap: 12px;
-            }
-
-            .header-left {
-                width: 100%;
-            }
-
-            .btn-group {
-                width: 100%;
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
-            }
-
-            .sync-badge, .theme-toggle-wrapper {
-                grid-column: 1 / -1;
-                justify-self: start;
-            }
-
-            .btn-folder, .btn-screenshot {
-                width: 100%;
-                min-height: 44px;
-                justify-content: center;
-                font-size: 12.5px;
-                padding: 10px 12px;
-            }
-        }
-
-        /* ── Navegação por abas: vira um "chip scroller" horizontal em vez
-               de empilhar 8 botões e tomar a tela toda de altura ── */
-        @media (max-width: 1023px) {
-            #top-tabs-row {
-                flex-direction: column;
-                align-items: stretch !important;
-            }
-
-            .main-tabs, .balance-tabs, .consumo-tabs {
-                flex-wrap: nowrap !important;
-                overflow-x: auto !important;
-                -webkit-overflow-scrolling: touch;
-                scroll-snap-type: x proximity;
-                width: 100%;
-                padding-bottom: 6px;
-                margin-bottom: 12px !important;
-                scrollbar-width: thin;
-            }
-
-            .main-tab, .balance-tab, .consumo-tab {
-                flex: 0 0 auto;
-                scroll-snap-align: start;
-                white-space: nowrap;
-                min-height: 44px;
-            }
-
-            .main-tab {
-                padding: 12px 18px !important;
-                font-size: 13px !important;
-            }
-
-            .tab-info-icon {
-                width: 20px;
-                height: 20px;
-                font-size: 11px;
-            }
-        }
-
-        /* ── Rede de segurança: qualquer grid de N colunas (KPIs, gráficos,
-               cards de comparação, etc.) empilha em telas pequenas.
-               Usa !important porque muitas dessas colunas vêm de
-               style="grid-template-columns:...” inline no HTML, que tem
-               especificidade maior que uma classe comum. ── */
-        @media (max-width: 480px) {
-            [style*="grid-template-columns"],
-            .kpi-grid, .main-grid, .subtype-grid, .rp-status-grid,
-            .rp-grid-4, .lab-turno-mini-table {
-                grid-template-columns: 1fr !important;
-            }
-        }
-
-        @media (min-width: 481px) and (max-width: 1023px) {
-            [style*="grid-template-columns: 1fr 1fr 1fr 1fr"],
-            [style*="grid-template-columns:1fr 1fr 1fr 1fr"],
-            .rp-grid-4 {
-                grid-template-columns: 1fr 1fr !important;
-            }
-
-            [style*="grid-template-columns: repeat(3"],
-            [style*="grid-template-columns: 1fr 1fr 1fr"],
-            [style*="grid-template-columns:1fr 1fr 1fr"] {
-                grid-template-columns: 1fr 1fr !important;
-            }
-        }
-
-        /* kpi-card / balance-card: nunca ficar espremido, texto sempre legível */
-        @media (max-width: 1023px) {
-            .kpi-card {
-                min-width: 0;
-            }
-
-            .kpi-card .val {
-                font-size: clamp(14px, 4vw, 20px);
-            }
-
-            .balance-card {
-                padding: 16px;
-                border-radius: 16px;
-            }
-        }
-
-        /* ── Tabelas: mantém overflow-x:auto (já existente) e só melhora o
-               toque/scroll; não corta nenhuma coluna nem esconde dado ── */
-        @media (max-width: 1023px) {
-            .table-container {
-                -webkit-overflow-scrolling: touch;
-                border-radius: 10px;
-            }
-
-            table {
-                font-size: 12px;
-            }
-
-            th, td {
-                padding: 9px 10px;
-                white-space: nowrap;
-            }
-        }
-
-        /* ── Gráficos: altura controlada para não esmagar nem estourar a
-               tela — a largura já é 100% do container em todos os canvas ── */
-        @media (max-width: 1023px) {
-            canvas {
-                max-width: 100% !important;
-            }
-
-            .lab-chart-wrap {
-                height: 420px !important;
-            }
-        }
-
-        /* ── Modais: quase fullscreen no celular, sempre com scroll interno
-               e nunca maior que a viewport ── */
-        @media (max-width: 640px) {
-            .modal-content {
-                width: 100%;
-                max-width: 100%;
-                height: 100%;
-                max-height: 100dvh;
-                border-radius: 0;
-                padding-bottom: env(safe-area-inset-bottom);
-            }
-
-            .modal-header {
-                border-radius: 0;
-            }
-        }
-
-        @media (max-width: 1023px) {
-            #tab-info-popover {
-                max-width: min(300px, calc(100vw - 24px)) !important;
-            }
-        }
-
-        /* ── Área de toque mínima recomendada (~44px) para todo controle
-               interativo, sem alterar nenhuma regra de negócio/JS ── */
-        @media (max-width: 1023px) {
-            button, select, input[type="checkbox"], .day-badge {
-                min-height: 40px;
-            }
-
-            .toggle-switch {
-                min-width: 44px;
-            }
-        }
-</style>
-
-
 </head>
 
 <body>
@@ -3706,7 +3574,7 @@
                     📸 CAPTURAR TELA
                 </button>
                 <button class="btn-screenshot" id="btn-export-pdf" onclick="exportarRelatorioPDF()"
-                    title="Exportar todas as abas do dashboard em um único PDF">
+                    title="Exportar cada aba do dashboard em um PDF separado (alta resolução)">
                     📄 EXP. PDF
                 </button>
             </div>
@@ -4612,18 +4480,6 @@
 
     <script>
         Chart.register(ChartDataLabels);
-
-        // Sem animação de entrada em NENHUM gráfico do dashboard. Muitos deles
-        // são recriados do zero (destroy + new Chart) toda vez que o usuário
-        // troca de aba/dia/filtro, e a exportação de PDF (e o botão de
-        // capturar tela) tiram o print poucos milissegundos depois disso —
-        // bem menos que os ~1s da animação padrão do Chart.js. Isso fazia a
-        // captura pegar barras/linhas ainda "crescendo" (parciais ou faltando)
-        // enquanto rótulos desenhados por plugins à parte (que já usam o
-        // valor final) apareciam no lugar certo, dando um resultado bugado
-        // só na exportação/captura. Desligar globalmente evita esse problema
-        // em qualquer gráfico atual ou futuro, sem precisar caçar um por um.
-        Chart.defaults.animation = false;
 
         // Lê um design token (CSS custom property) já resolvido para o tema atual
         function getToken(nome, fallback) {
@@ -6970,15 +6826,6 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    // Sem animação de entrada: esse gráfico é recriado do zero
-                    // (destroy + new Chart) toda vez que a aba é trocada, e a
-                    // exportação de PDF tira o print poucos milissegundos
-                    // depois disso. Com animação ligada (padrão ~1s), a
-                    // captura pegava as barras ainda crescendo — só que o
-                    // número do total (desenhado por outro plugin, usando o
-                    // valor final) já aparecia no lugar certo, dando aquele
-                    // descompasso "número certo, barra bugada/faltando".
-                    animation: false,
                     layout: { padding: { top: 50 } }, // espaço ajustado para não cortar rótulos/título
                     interaction: { mode: 'index', intersect: false },
                     scales: {
@@ -7037,22 +6884,7 @@
                             }
                         },
                         datalabels: {
-                            // Só desenha o número dentro do segmento se ele tiver
-                            // altura suficiente pra caber sem colidir com o vizinho.
-                            // Em horas com muitas frentes ativas ao mesmo tempo, a
-                            // barra empilhada fica com fatias finíssimas — mostrar
-                            // rótulo em cada uma delas (fonte 8px) fazia os números
-                            // se sobreporem e virarem uma "sopa" ilegível. Fatias
-                            // menores que ~11px de altura ficam sem rótulo (o total
-                            // continua visível no topo da barra e no tooltip).
-                            display: ctx => {
-                                const valor = ctx.dataset.data[ctx.dataIndex];
-                                if (!(valor > 0)) return false;
-                                const meta = ctx.chart.getDatasetMeta(ctx.datasetIndex);
-                                const el = meta && meta.data && meta.data[ctx.dataIndex];
-                                const alturaPx = el && typeof el.height === 'number' ? el.height : null;
-                                return alturaPx === null || alturaPx >= 11;
-                            },
+                            display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
                             formatter: v => v.toFixed(0),
                             color: '#ffffff',
                             font: { size: 8, weight: '800', family: 'Plus Jakarta Sans' },
@@ -7651,8 +7483,15 @@
                 const diferenca = real.peso - planejado;
                 const densidade = real.viagens > 0 ? real.peso / real.viagens : 0;
                 const analisePct = an.total > 0 ? (an.sim / an.total) * 100 : 0;
-                const projecaoDia = horasFechadas > 0 ? (real.peso / horasFechadas) * 24 : 0;
-                const saldo24h = projecaoDia - m.meta24h;
+                // Projeção do dia: só extrapola a taxa horária real para as 24h
+                // quando já houver um número mínimo de horas fechadas (3h).
+                // Extrapolar a partir de 1h amplifica qualquer oscilação em até
+                // 24x e gera números "impossíveis" (ex.: 1h de pico vira um dia
+                // inteiro de pico). Com menos de 3h fechadas, a projeção fica
+                // indefinida (null) em vez de mostrar um valor não confiável.
+                const HORAS_MIN_PROJECAO = 3;
+                const projecaoDia = horasFechadas >= HORAS_MIN_PROJECAO ? (real.peso / horasFechadas) * 24 : null;
+                const saldo24h = projecaoDia !== null ? projecaoDia - m.meta24h : null;
                 return {
                     frente: k, fa: m.fa, raioMedio: m.raioMedio, meta24h: m.meta24h, metaHora,
                     planejado, realizado: real.peso, diferenca, densidade, viagens: real.viagens,
@@ -7851,12 +7690,19 @@
             }
 
             // ── Tabela grande por frente ─────────────────────────────────
-            let somaMeta = 0, somaPlanejado = 0, somaReal = 0, somaViagens = 0, somaProjecao = 0, somaSaldo = 0, raioW = 0, densW = 0, analiseW = 0;
+            let somaMeta = 0, somaPlanejado = 0, somaReal = 0, somaViagens = 0, somaProjecao = 0, somaSaldo = 0, raioW = 0, densW = 0, analiseW = 0, temProjecaoValida = false;
             const corDiferenca = v => v >= 0 ? 'var(--color-success-text)' : 'var(--color-danger-text)';
             const bodyRows = linhas.map(l => {
                 somaMeta += l.meta24h; somaPlanejado += l.planejado; somaReal += l.realizado;
-                somaViagens += l.viagens; somaProjecao += l.projecaoDia; somaSaldo += l.saldo24h;
+                somaViagens += l.viagens;
+                if (l.projecaoDia !== null) { somaProjecao += l.projecaoDia; somaSaldo += l.saldo24h; temProjecaoValida = true; }
                 raioW += l.raioMedio * l.meta24h; densW += l.densidade * l.viagens; analiseW += l.analisePct * l.meta24h;
+                const projecaoCel = l.projecaoDia !== null
+                    ? `<td>${rpFmtNum(l.projecaoDia, 2)}</td>`
+                    : `<td title="Aguardando pelo menos 3h fechadas para projetar com segurança">—</td>`;
+                const saldoCel = l.saldo24h !== null
+                    ? `<td style="color:${corDiferenca(l.saldo24h)};font-weight:800;">${l.saldo24h >= 0 ? '▲' : '▼'} ${rpFmtNum(Math.abs(l.saldo24h), 2)}</td>`
+                    : `<td title="Aguardando pelo menos 3h fechadas para projetar com segurança">—</td>`;
                 return `<tr>
                     <td><strong>${l.frente}</strong></td>
                     <td>${l.fa || '—'}</td>
@@ -7869,8 +7715,8 @@
                     <td>${rpFmtNum(l.densidade, 2)}</td>
                     <td>${l.viagens}</td>
                     <td>${rpFmtNum(l.analisePct, 1)}%</td>
-                    <td>${rpFmtNum(l.projecaoDia, 2)}</td>
-                    <td style="color:${corDiferenca(l.saldo24h)};font-weight:800;">${l.saldo24h >= 0 ? '▲' : '▼'} ${rpFmtNum(Math.abs(l.saldo24h), 2)}</td>
+                    ${projecaoCel}
+                    ${saldoCel}
                 </tr>`;
             }).join('');
             const totalRow = `<tr style="font-weight:800;background:var(--color-bg-surface-2, rgba(64,128,12,.08));">
@@ -7884,8 +7730,8 @@
                 <td>${somaViagens > 0 ? rpFmtNum(densW / somaViagens, 2) : '—'}</td>
                 <td>${somaViagens}</td>
                 <td>${somaMeta > 0 ? rpFmtNum(analiseW / somaMeta, 1) : '—'}%</td>
-                <td>${rpFmtNum(somaProjecao, 2)}</td>
-                <td style="color:${corDiferenca(somaSaldo)};">${rpFmtNum(somaSaldo, 2)}</td>
+                <td>${temProjecaoValida ? rpFmtNum(somaProjecao, 2) : '—'}</td>
+                <td style="color:${corDiferenca(somaSaldo)};">${temProjecaoValida ? rpFmtNum(somaSaldo, 2) : '—'}</td>
             </tr>`;
             document.getElementById('rp-tabela-frentes-body').innerHTML = bodyRows + totalRow;
 
@@ -9018,11 +8864,6 @@
                     plugins: [ChartDataLabels],
                     options: {
                         responsive: true, maintainAspectRatio: false,
-                        // Mesmo motivo do gráfico "Entrada de Cana por Hora": esse
-                        // chart é recriado do zero a cada troca de aba, e sem
-                        // desligar a animação a exportação de PDF podia capturar
-                        // o print no meio da animação de entrada.
-                        animation: false,
                         layout: { padding: { top: 20, right: 60 } },
                         interaction: { mode: 'index', intersect: false },
                         scales: {
@@ -9114,9 +8955,6 @@
                     },
                     options: {
                         responsive: true, maintainAspectRatio: false,
-                        // Idem — recriado a cada troca de aba, sem animação pra
-                        // não ser capturado a meio-caminho na exportação de PDF.
-                        animation: false,
                         interaction: { mode: 'index', intersect: false },
                         plugins: {
                             legend: {
@@ -9602,12 +9440,6 @@
 
             try {
                 // ── renderiza com html2canvas ──────────────────────────
-                // Zera a rolagem antes de medir/capturar pelo mesmo motivo do
-                // exportador de PDF: com a página rolada, o html2canvas pode
-                // duplicar uma faixa de conteúdo na "costura" do clone interno.
-                window.scrollTo(0, 0);
-                await new Promise(r => requestAnimationFrame(r));
-
                 const rect = target.getBoundingClientRect();
                 const targetW = Math.min(rect.width || target.scrollWidth, 1920);
                 const targetH = target.scrollHeight || rect.height;
@@ -9622,7 +9454,7 @@
                     windowWidth: targetW,
                     windowHeight: targetH,
                     scrollX: 0,
-                    scrollY: 0
+                    scrollY: -window.scrollY
                 });
 
                 const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
@@ -9721,19 +9553,22 @@
             setTimeout(() => toast.classList.remove('show'), 3800);
         }
 
-        // ── Exportar relatório de TODAS as abas em PDF ──────────────────────
-        // Percorre cada aba principal, força o render dela, captura com
-        // html2canvas e fatia o resultado em páginas A4 via jsPDF. Cada aba
-        // começa com uma página de título e volta para a aba original ao final.
+        // ── Exportar relatório — um PDF separado por aba ─────────────────────
+        // Cada aba vira um arquivo PDF próprio (nunca combinados), em alta
+        // resolução. Conteúdo curto = 1 página do tamanho exato do conteúdo
+        // (sem sobra de espaço em branco). Conteúdo comprido = exatamente 2
+        // páginas (nunca tenta espremer tudo em 1 só, nem faz mais que 2).
+        // A aba Rel. Produção ganha um tratamento visual "cópia fiel"
+        // (banner + cores) para casar com o relatório de referência do usuário.
         const RP_TABS_PDF = [
-            { key: 'solinftec', id: 'main-solinftec', titulo: '📊 Análise Solinftec' },
-            { key: 'balance', id: 'main-balance', titulo: '🚜 Análise Balança' },
-            { key: 'densidade', id: 'main-densidade', titulo: '📦 Densidade de Carga' },
-            { key: 'controle', id: 'main-controle', titulo: '📈 Controle de Carga' },
-            { key: 'consumo', id: 'main-consumo', titulo: '⛽ Consumo' },
-            { key: 'liberacao', id: 'main-liberacao', titulo: '🔓 Controle de Liberação' },
-            { key: 'lab', id: 'main-lab', titulo: '🔬 Lab' },
-            { key: 'relproducao', id: 'main-relproducao', titulo: '📄 Rel. Produção' }
+            { key: 'solinftec', id: 'main-solinftec', titulo: 'Análise Solinftec', arquivo: 'analise-solinftec' },
+            { key: 'balance', id: 'main-balance', titulo: 'Análise Balança', arquivo: 'analise-balanca' },
+            { key: 'densidade', id: 'main-densidade', titulo: 'Densidade de Carga', arquivo: 'densidade-de-carga' },
+            { key: 'controle', id: 'main-controle', titulo: 'Controle de Carga', arquivo: 'controle-de-carga' },
+            { key: 'consumo', id: 'main-consumo', titulo: 'Consumo', arquivo: 'consumo' },
+            { key: 'liberacao', id: 'main-liberacao', titulo: 'Controle de Liberação', arquivo: 'controle-de-liberacao' },
+            { key: 'lab', id: 'main-lab', titulo: 'Lab', arquivo: 'lab' },
+            { key: 'relproducao', id: 'main-relproducao', titulo: 'Rel. Produção', arquivo: 'relatorio-producao-coa' }
         ];
 
         // Troca de aba sem depender do "event" do clique (usado dentro do loop
@@ -9748,6 +9583,7 @@
             const balHeaderTabs = document.getElementById('balance-tabs-header');
             if (tabKey === 'relproducao') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderRelProducao(); }
             else if (tabKey === 'balance') { if (balHeaderTabs) balHeaderTabs.style.display = 'flex'; }
+            else if (tabKey === 'densidade') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderDensidadeTimeline(); renderDensidade(); }
             else if (tabKey === 'controle') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderControle(); }
             else if (tabKey === 'consumo') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderConsumo(); }
             else if (tabKey === 'liberacao') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderLiberacao(); }
@@ -9755,56 +9591,321 @@
             else { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; }
         }
 
-        // jsPDF, com as fontes padrão (Helvetica), só sabe desenhar texto em
-        // Latin-1/WinAnsi. Emojis (pares substitutos UTF-16, fora da faixa
-        // \u0000-\u00FF) não têm glifo nessa fonte e saem como lixo tipo
-        // "Ø=ÜÊ". Por isso tiramos qualquer caractere fora do Latin-1 antes
-        // de desenhar o título — mantém acentos (á, ã, ç...) e remove só o
-        // emoji e espaços sobrando.
-        function rpTituloParaPDF(titulo) {
-            return titulo.replace(/[^\x00-\xFF]/g, '').trim();
+        // ═══════════════════════════════════════════════════════════════
+        // CLONE do PDF de referência — só para a exportação da aba
+        // Rel. Produção. Constrói um container fora da tela com a mesma
+        // estrutura/cores do relatório modelo, usando os dados já calculados
+        // (rpCalcPorFrente, rpCalcDetalhe, rpCalcTop, potencialData etc.),
+        // e desenha os gráficos nele. rpDestruirClonePDF() limpa tudo depois.
+        // ═══════════════════════════════════════════════════════════════
+        const RP_CLONE_CHART_IDS = ['rp-pdf-canvieiro', 'rp-pdf-raiomedio', 'rp-pdf-moagem-hora', 'rp-pdf-potencial', 'rp-pdf-rpm', 'rp-pdf-disp'];
+
+        async function rpConstruirClonePDF() {
+            renderRelProducao();
+
+            let clone = document.getElementById('rp-pdf-clone');
+            if (!clone) {
+                clone = document.createElement('div');
+                clone.id = 'rp-pdf-clone';
+                document.body.appendChild(clone);
+            }
+
+            const linhas = rpCalcPorFrente();
+            const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
+            const proj = calcProjecaoMoagem();
+            const metaTotal = typeof metaMoagemDiaria === 'number' ? metaMoagemDiaria : 0;
+            const fmtTon = v => rpFmtNum(v, 2) + ' Ton';
+
+            // ── Status de caminhões ──────────────────────────────────────
+            const h = rpUltimaHoraPotencial();
+            const p = h !== null ? potencialData[h] : null;
+            const coaDados = rpCoaDia();
+            const analisadoCount = coaDados.filter(c => c.analisado).length;
+            const totalCoa = coaDados.length;
+            const pctAnalisado = totalCoa > 0 ? (analisadoCount / totalCoa) * 100 : 0;
+            const statusDefs = p ? [
+                ['📤', 'DESCARGA', p.descarga, 'descarga'],
+                ['🌾', 'CAMPO', p.campo, 'campo'],
+                ['↩️', 'VOLTA', p.volta, 'volta'],
+                ['🚚', 'IDA', p.ida, 'ida'],
+                ['⏳', 'FILA EXT.', p.filaExt, 'filaExt'],
+                ['📦', 'PÁTIO', p.carretas, 'carretas'],
+                ['🛑', 'PARADOS', p.parado, 'parados']
+            ] : [];
+            let statusHtml = statusDefs.map(([icon, label, v, key]) => {
+                const r = rpStatusRuleInfo(key, v);
+                return `<div class="clone-status-card ${r.ok ? '' : 'bad'}"><div class="lbl">${icon} ${label}</div><div class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</div></div>`;
+            }).join('');
+            const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
+            statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}"><div class="lbl">🔬 Analisado</div><div class="val">${totalCoa}</div></div>`;
+            statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}"><div class="lbl">📊 % ANALISADOS</div><div class="val">${rpFmtNum(pctAnalisado, 1)}%</div></div>`;
+            if (!p) statusHtml = '<div style="grid-column:1/-1;text-align:center;color:#888;padding:10px;">Sem dados de Potencial.xlsx</div>';
+
+            // ── Tabela grande por frente ──────────────────────────────────
+            let somaMeta = 0, somaPlanejado = 0, somaReal = 0, somaViagens = 0, somaProjecao = 0, somaSaldo = 0, raioW = 0, densW = 0, analiseW = 0, temProjecaoValida = false;
+            const seta = v => v >= 0
+                ? `<span style="color:#2e7d32;">▲ ${rpFmtNum(Math.abs(v), 2)}</span>`
+                : `<span style="color:#c62828;">▼ ${rpFmtNum(Math.abs(v), 2)}</span>`;
+            const setaOuTraco = v => v === null ? '<span style="color:#999;">—</span>' : seta(v);
+            const linhasHtml = linhas.map(l => {
+                somaMeta += l.meta24h; somaPlanejado += l.planejado; somaReal += l.realizado;
+                somaViagens += l.viagens;
+                if (l.projecaoDia !== null) { somaProjecao += l.projecaoDia; somaSaldo += l.saldo24h; temProjecaoValida = true; }
+                raioW += l.raioMedio * l.meta24h; densW += l.densidade * l.viagens; analiseW += l.analisePct * l.meta24h;
+                return `<tr>
+                    <td><strong>${l.frente}</strong></td><td>${l.fa || '—'}</td>
+                    <td>${rpFmtNum(l.raioMedio, 1)}</td><td>${rpFmtNum(l.meta24h, 0)}</td>
+                    <td>${rpFmtNum(l.metaHora, 1)}</td><td>${rpFmtNum(l.planejado, 0)}</td>
+                    <td>${rpFmtNum(l.realizado, 2)}</td><td>${seta(l.diferenca)}</td>
+                    <td>${rpFmtNum(l.densidade, 2)}</td><td>${rpFmtNum(l.analisePct, 1)}%</td>
+                    <td>${l.projecaoDia !== null ? rpFmtNum(l.projecaoDia, 2) : '—'}</td><td>${setaOuTraco(l.saldo24h)}</td>
+                </tr>`;
+            }).join('');
+            const totalRowHtml = `<tr class="total-row">
+                <td colspan="2">TOTAL</td><td>${somaMeta > 0 ? rpFmtNum(raioW / somaMeta, 1) : '—'}</td>
+                <td>${rpFmtNum(somaMeta, 0)}</td><td>${rpFmtNum(somaMeta / 24, 1)}</td>
+                <td>${rpFmtNum(somaPlanejado, 0)}</td><td>${rpFmtNum(somaReal, 2)}</td>
+                <td>${seta(somaReal - somaPlanejado)}</td>
+                <td>${somaViagens > 0 ? rpFmtNum(densW / somaViagens, 2) : '—'}</td>
+                <td>${somaMeta > 0 ? rpFmtNum(analiseW / somaMeta, 1) : '—'}%</td>
+                <td>${temProjecaoValida ? rpFmtNum(somaProjecao, 2) : '—'}</td><td>${temProjecaoValida ? seta(somaSaldo) : '<span style="color:#999;">—</span>'}</td>
+            </tr>`;
+
+            // ── Top Caminhões / Top Colhedoras ──────────────────────────
+            const topHtml = arr => arr.map(r => `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eef2ee;font-size:11px;"><span>⭐ <strong>${r.cod}</strong></span><span>${rpFmtNum(r.peso, 2)} t</span></div>`).join('') || '<div style="color:#999;text-align:center;">Sem dados</div>';
+
+            // ── Detalhe por Frente/Tipo (agrupado) ──────────────────────
+            const detalhe = rpCalcDetalhe();
+            const gruposFrente = [...new Set(detalhe.map(d => d.frente))];
+            const detalheHtml = gruposFrente.map(fr => {
+                const linhasFr = detalhe.filter(d => d.frente === fr);
+                const header = `<tr><td colspan="4" style="background:#f2f9f4;font-weight:800;color:#1f6e3d;">${fr}</td></tr>`;
+                const corpo = linhasFr.map(d => `<tr>
+                    <td style="padding-left:16px;">${d.owner} · ${d.tipo}</td>
+                    <td>${rpFmtNum(d.peso, 2)} t</td>
+                    <td>${rpFmtNum(d.viagens > 0 ? d.peso / d.viagens : 0, 2)}</td>
+                    <td>${d.viagens}</td>
+                </tr>`).join('');
+                return header + corpo;
+            }).join('');
+
+            clone.innerHTML = `
+                <div class="clone-header">
+                    <div style="display:flex;align-items:center;gap:14px;">
+                        <div class="logo-badge">🌱</div>
+                        <div class="titulo-usina">RELATÓRIO DE PRODUÇÃO</div>
+                    </div>
+                    <div style="text-align:right;color:#fff;">
+                        <div style="font-size:14px;font-weight:800;">${new Date().toLocaleString('pt-BR')}</div>
+                        <div style="font-size:11px;opacity:.85;">Última atualização</div>
+                    </div>
+                </div>
+
+                <div class="clone-kpi-row">
+                    <div class="clone-kpi-card"><div class="clone-kpi-label">REALIZADO</div><div class="clone-kpi-val">${fmtTon(totalRealizado)}</div></div>
+                    <div class="clone-kpi-card"><div class="clone-kpi-label">PROJEÇÃO DE MOAGEM</div><div class="clone-kpi-val">${fmtTon(proj.projecao)}</div></div>
+                    <div class="clone-kpi-card"><div class="clone-kpi-label">META DE MOAGEM</div><div class="clone-kpi-val">${fmtTon(metaTotal)}</div></div>
+                </div>
+
+                <div class="clone-status-row">${statusHtml}</div>
+
+                <div style="display:grid;grid-template-columns:2.3fr 1fr;gap:10px;">
+                    <div class="clone-panel">
+                        <div class="clone-panel-title">Frentes · Meta × Planejado × Realizado</div>
+                        <table class="clone-table">
+                            <thead><tr><th>Frente</th><th>F.Agr</th><th>Raio Médio</th><th>Meta 24h</th><th>Meta Hora</th><th>Planejado</th><th>Realizado</th><th>Diferença</th><th>Densidade</th><th>Análise%</th><th>Projeção dia</th><th>Saldo 24H</th></tr></thead>
+                            <tbody>${linhasHtml}${totalRowHtml}</tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <div class="clone-mini-charts-row">
+                            <div class="clone-panel"><div class="clone-panel-title">Produção Canavieiro</div><div style="height:140px;"><canvas id="rp-pdf-canvieiro-canvas"></canvas></div></div>
+                            <div class="clone-panel"><div class="clone-panel-title">Raio Médio</div><div style="height:140px;"><canvas id="rp-pdf-raiomedio-canvas"></canvas></div></div>
+                        </div>
+                        <div class="clone-mini-charts-row">
+                            <div class="clone-panel"><div class="clone-panel-title">Top Caminhões</div>${topHtml(rpCalcTop('frota'))}</div>
+                            <div class="clone-panel"><div class="clone-panel-title">Top Colhedoras</div>${topHtml(rpCalcTop('colh'))}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Coluna estreita com a tabela de detalhe + coluna larga com os
+                     3 gráficos horários empilhados — mesma composição do relatório
+                     de referência (tabela à esquerda, gráficos à direita). -->
+                <div style="display:grid;grid-template-columns:1fr 3fr;gap:10px;align-items:start;">
+                    <div class="clone-panel" style="max-height:900px;overflow:hidden;">
+                        <div class="clone-panel-title">Frente · Descrição · Líquido · Densidade · Viagens</div>
+                        <table class="clone-table">
+                            <thead><tr><th>Descrição</th><th>Líquido</th><th>Densidade</th><th>Viagens</th></tr></thead>
+                            <tbody>${detalheHtml}</tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <div class="clone-chart-card"><div class="clone-chart-title">Moagem Hora (Toneladas)</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-moagem-hora-canvas"></canvas></div></div>
+                        <div class="clone-chart-card"><div class="clone-chart-title">Potencial de Colheita</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-potencial-canvas"></canvas></div></div>
+                        <div class="clone-chart-card"><div class="clone-chart-title">Rotação da Moenda (RPM)</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-rpm-canvas"></canvas></div></div>
+                    </div>
+                </div>
+
+                <div class="clone-chart-card"><div class="clone-chart-title">Disponibilidade — Transbordo / Colhedora / Caminhão</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-disp-canvas"></canvas></div></div>
+            `;
+
+            rpRenderGraficosClone();
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            await new Promise(r => setTimeout(r, 700));
+            return clone;
         }
 
-        // Margem superior/esquerda usada tanto pelos títulos de aba quanto
-        // pelo início das imagens em páginas novas.
-        const RP_MARGEM_MM = 15;
+        function rpRenderGraficosClone() {
+            const dados = rpDadosDia();
+            const pesoProp = dados.filter(d => !d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const pesoTerc = dados.filter(d => d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const totalPT = pesoProp + pesoTerc;
+            const canvCanv = document.getElementById('rp-pdf-canvieiro-canvas');
+            if (canvCanv && totalPT > 0) {
+                charts['rp-pdf-canvieiro'] = rpChartBarrasComparativo(canvCanv, {
+                    labels: ['Próprio %', 'Terceiro %'],
+                    valores: [pesoProp / totalPT * 100, pesoTerc / totalPT * 100],
+                    cores: ['#2e7d32', '#f59e0b'],
+                    formatarLabel: v => rpFmtNum(v, 2) + '%',
+                    formatarTooltip: v => rpFmtNum(v, 2) + '%'
+                });
+            }
+            const dadosBalanco = selectedDay === 'TODOS' ? balanceData : balanceData.filter(d => d.dia === selectedDay);
+            const raioPropMedio = avg(dadosBalanco.filter(d => d.camProp && d.raio > 0).map(d => d.raio));
+            const raioTercMedio = avg(dadosBalanco.filter(d => d.camTerc && d.raio > 0).map(d => d.raio));
+            const canvRaio = document.getElementById('rp-pdf-raiomedio-canvas');
+            if (canvRaio && (raioPropMedio > 0 || raioTercMedio > 0)) {
+                charts['rp-pdf-raiomedio'] = rpChartBarrasComparativo(canvRaio, {
+                    labels: ['Terceiro', 'Próprio'],
+                    valores: [raioTercMedio, raioPropMedio],
+                    cores: ['#f59e0b', '#2e7d32'],
+                    formatarLabel: v => rpFmtNum(v, 2) + ' km',
+                    formatarTooltip: v => rpFmtNum(v, 2) + ' km'
+                });
+            }
 
-        // Fatia um canvas alto em pedaços que caibam na página A4, começando
-        // em "startYmm" (que pode estar no meio de uma página, logo após o
-        // título da aba anterior/atual) — só quebra página quando o espaço
-        // realmente acaba, em vez de sempre começar do topo. Isso evita
-        // sobra grande de espaço em branco entre o fim de uma aba e o
-        // título da próxima. Retorna o Y (mm) onde a última imagem terminou,
-        // para a próxima aba continuar a partir dali.
-        function rpAdicionarCanvasFluido(pdf, canvas, pageWmm, pageHmm, startYmm) {
-            const pxPerMm = canvas.width / pageWmm;
-            let renderedHpx = 0;
-            let y = startYmm;
-            while (renderedHpx < canvas.height) {
-                let availMm = pageHmm - y;
-                // Sobra menos de ~10mm na página: não vale a pena fatiar um
-                // filete minúsculo aqui, começa a próxima fatia numa página nova.
-                if (availMm < 10) {
-                    pdf.addPage();
-                    y = 0;
-                    availMm = pageHmm;
+            const HORAS = HORAS_CICLO;
+            const LABELS = HORAS.map(hh => String(hh).padStart(2, '0') + ':00');
+            const rpCloneLabels = {
+                display: (ctx) => { const v = ctx.dataset.data[ctx.dataIndex]; return v !== null && v !== undefined && v !== 0; },
+                anchor: 'end', align: 'top', offset: 2, color: '#111', font: { weight: '800', size: 10 },
+                formatter: (v) => rpFmtNum(v, 0)
+            };
+            const rpCloneCorBarras = (arr, metaVal, corOk) => arr.map(v => {
+                if (v === null || v === undefined) return 'transparent';
+                if (metaVal === null || metaVal === undefined || isNaN(metaVal) || metaVal <= 0) return corOk;
+                return v < metaVal ? '#c62828' : corOk;
+            });
+            const rpCloneMetaLine = (getMeta) => ({
+                id: 'rpCloneMetaLine',
+                afterDatasetsDraw(chart) {
+                    const meta = getMeta();
+                    if (meta === null || meta === undefined || isNaN(meta) || meta <= 0) return;
+                    const { ctx, scales: { x, y } } = chart;
+                    if (!x || !y) return;
+                    const yPos = y.getPixelForValue(meta);
+                    if (yPos < y.top || yPos > y.bottom) return;
+                    ctx.save();
+                    ctx.strokeStyle = '#1b4f72'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+                    ctx.beginPath(); ctx.moveTo(x.left, yPos); ctx.lineTo(x.right, yPos); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = '#1b4f72'; ctx.font = 'bold 10px Arial'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+                    ctx.fillText('META ' + rpFmtNum(meta, 1), x.right - 2, yPos - 3);
+                    ctx.restore();
                 }
-                const sliceHpxMax = availMm * pxPerMm;
-                const sliceHpx = Math.min(sliceHpxMax, canvas.height - renderedHpx);
+            });
+
+            const metaMoagemHora = (typeof metaMoagemDiaria === 'number' && metaMoagemDiaria > 0) ? metaMoagemDiaria / 24 : null;
+            const canvMoagem = document.getElementById('rp-pdf-moagem-hora-canvas');
+            if (canvMoagem) {
+                const totalPorHora = getTotalPorHoraArray().map(v => v > 0 ? parseFloat(v.toFixed(2)) : 0);
+                charts['rp-pdf-moagem-hora'] = new Chart(canvMoagem.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ data: totalPorHora, backgroundColor: rpCloneCorBarras(totalPorHora, metaMoagemHora, '#2e7d32'), borderRadius: 2, datalabels: rpCloneLabels }] },
+                    plugins: [rpCloneMetaLine(() => metaMoagemHora)],
+                    options: { responsive: true, maintainAspectRatio: false, layout: { padding: { top: 22, right: 50 } }, scales: { x: { ticks: { color: '#333', font: { size: 9 } } }, y: { ticks: { color: '#333' } } }, plugins: { legend: { display: false } } }
+                });
+            }
+            const potArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].potencial : null);
+            const canvPot = document.getElementById('rp-pdf-potencial-canvas');
+            if (canvPot) {
+                charts['rp-pdf-potencial'] = new Chart(canvPot.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ data: potArr, backgroundColor: rpCloneCorBarras(potArr, rpMetas.potencial, '#2e7d32'), borderRadius: 2, datalabels: rpCloneLabels }] },
+                    plugins: [rpCloneMetaLine(() => rpMetas.potencial)],
+                    options: { responsive: true, maintainAspectRatio: false, spanGaps: false, layout: { padding: { top: 22, right: 50 } }, scales: { x: { ticks: { color: '#333', font: { size: 9 } } }, y: { ticks: { color: '#333' } } }, plugins: { legend: { display: false } } }
+                });
+            }
+            const rpmArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].rpm : null);
+            const canvRpm = document.getElementById('rp-pdf-rpm-canvas');
+            if (canvRpm) {
+                charts['rp-pdf-rpm'] = new Chart(canvRpm.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ data: rpmArr, backgroundColor: rpCloneCorBarras(rpmArr, rpMetas.rpm, '#2e7d32'), borderRadius: 2, datalabels: rpCloneLabels }] },
+                    plugins: [rpCloneMetaLine(() => rpMetas.rpm)],
+                    options: { responsive: true, maintainAspectRatio: false, layout: { padding: { top: 22, right: 50 } }, scales: { x: { ticks: { color: '#333', font: { size: 9 } } }, y: { ticks: { color: '#333' } } }, plugins: { legend: { display: false } } }
+                });
+            }
+            const dispColhArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispColh * 100 : null);
+            const dispTransbArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispTransb * 100 : null);
+            const dispCamArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispCam * 100 : null);
+            const canvDisp = document.getElementById('rp-pdf-disp-canvas');
+            if (canvDisp) {
+                charts['rp-pdf-disp'] = new Chart(canvDisp.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: LABELS,
+                        datasets: [
+                            { label: 'Disp. Colhedora', data: dispColhArr, borderColor: '#2e7d32', backgroundColor: '#2e7d32', tension: .3 },
+                            { label: 'Disp. Transbordo', data: dispTransbArr, borderColor: '#f59e0b', backgroundColor: '#f59e0b', tension: .3 },
+                            { label: 'Disp. Caminhão', data: dispCamArr, borderColor: '#1b4f72', backgroundColor: '#1b4f72', tension: .3 }
+                        ]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false, spanGaps: false, scales: { y: { ticks: { callback: v => v + '%', color: '#333' } }, x: { ticks: { color: '#333', font: { size: 9 } } } }, plugins: { legend: { labels: { color: '#333' } }, datalabels: { display: false } } }
+                });
+            }
+        }
+
+        function rpDestruirClonePDF() {
+            RP_CLONE_CHART_IDS.forEach(id => { if (charts[id]) { try { charts[id].destroy(); } catch (e) { /* ignora */ } delete charts[id]; } });
+            const clone = document.getElementById('rp-pdf-clone');
+            if (clone) clone.remove();
+        }
+
+        // Fatia um canvas capturado em páginas de PDF: se couber numa página só,
+        // cria UMA página do tamanho exato do conteúdo (sem sobra em branco).
+        // Se for comprido, divide em QUANTAS páginas A4 forem necessárias —
+        // nunca corta conteúdo, não importa quantas páginas isso exija.
+        function rpMontarPaginasPDF(pdf, canvas, pageWmm, pageHmmA4) {
+            const totalHmm = (canvas.height * pageWmm) / canvas.width;
+
+            if (totalHmm <= pageHmmA4 * 1.1) {
+                pdf.addPage([pageWmm, totalHmm], 'p');
+                pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pageWmm, totalHmm);
+                return;
+            }
+
+            // Altura de cada fatia em px, correspondente a uma página A4 cheia.
+            const pageHmmSlice = pageHmmA4;
+            const sliceAlturaPx = Math.floor((pageHmmSlice * canvas.width) / pageWmm);
+            const numPaginas = Math.ceil(canvas.height / sliceAlturaPx);
+
+            for (let i = 0; i < numPaginas; i++) {
+                const inicio = i * sliceAlturaPx;
+                const altura = Math.min(sliceAlturaPx, canvas.height - inicio);
+                if (altura <= 0) continue;
                 const pageCanvas = document.createElement('canvas');
                 pageCanvas.width = canvas.width;
-                pageCanvas.height = sliceHpx;
+                pageCanvas.height = altura;
                 const ctx = pageCanvas.getContext('2d');
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
-                ctx.drawImage(canvas, 0, renderedHpx, canvas.width, sliceHpx, 0, 0, canvas.width, sliceHpx);
-                const imgData = pageCanvas.toDataURL('image/jpeg', 0.92);
-                const sliceHmm = (sliceHpx * pageWmm) / canvas.width;
-                pdf.addImage(imgData, 'JPEG', 0, y, pageWmm, sliceHmm);
-                renderedHpx += sliceHpx;
-                y += sliceHmm;
+                ctx.drawImage(canvas, 0, inicio, canvas.width, altura, 0, 0, canvas.width, altura);
+                const sliceHmm = (altura * pageWmm) / canvas.width;
+                pdf.addPage([pageWmm, sliceHmm], 'p');
+                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pageWmm, sliceHmm);
             }
-            return y;
         }
 
         async function exportarRelatorioPDF() {
@@ -9825,75 +9926,80 @@
             // Guarda a aba ativa atual para restaurar ao final.
             const abaOriginal = document.querySelector('.main-tab-content.active');
             const abaOriginalKey = abaOriginal ? abaOriginal.id.replace('main-', '') : 'solinftec';
-
             const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-            const pageWmm = pdf.internal.pageSize.getWidth();
-            const pageHmm = pdf.internal.pageSize.getHeight();
-            // Cursor Y contínuo (mm) — cada aba nova começa logo depois de
-            // onde a anterior terminou, em vez de sempre pular pra uma
-            // página em branco. Só quebra página quando falta espaço.
-            let cursorYmm = RP_MARGEM_MM;
-            let primeiraAba = true;
+            const carimboArquivo = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+            let algumaFalhou = false;
+
+            // Gera o PDF SOMENTE da aba que está ativa/aberta no momento do
+            // clique — não percorre mais todas as abas de RP_TABS_PDF. Para
+            // gerar o PDF de outra aba, o usuário troca de aba na tela e
+            // clica em exportar novamente.
+            const tabsParaExportar = RP_TABS_PDF.filter(t => t.key === abaOriginalKey);
+            if (tabsParaExportar.length === 0) {
+                showToast('⚠️ Não é possível exportar PDF desta aba.', '#dc2626');
+                btn.disabled = false;
+                btn.innerHTML = textoOriginal;
+                return;
+            }
 
             try {
-                for (const tab of RP_TABS_PDF) {
+                for (const tab of tabsParaExportar) {
                     btn.innerHTML = '⏳ Gerando PDF… (' + tab.titulo + ')';
-                    rpIrParaAba(tab.key);
-                    // renderControle() (aba "Controle de Carga") cria os gráficos
-                    // de % Mix e Volume por Hora dentro de um setTimeout(60) —
-                    // truque pra esperar o container ganhar altura real antes do
-                    // Chart.js medir o canvas. Só 2 frames de animação (~30ms) não
-                    // é tempo suficiente pra isso rodar: o resize()/captura abaixo
-                    // pegava esses gráficos ainda inexistentes ou recém-criados
-                    // com layout errado, saindo espremidos/em branco no PDF. Espera
-                    // um pouco mais, com folga, antes de seguir.
-                    await new Promise(r => setTimeout(r, 150));
-                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-                    Object.values(charts).forEach(c => { try { c && c.resize(); } catch (e) { /* ignora */ } });
-                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                    let target;
+                    let tabelasDetalhamento = [];
 
-                    const target = document.getElementById(tab.id);
+                    if (tab.key === 'relproducao') {
+                        // Aba Rel. Produção: usa o clone dedicado (layout do
+                        // relatório de referência), não a aba ao vivo.
+                        target = await rpConstruirClonePDF();
+                    } else {
+                        rpIrParaAba(tab.key);
+                        // Espera dupla animação de frame + tempo extra para os
+                        // gráficos (Chart.js) terminarem a animação de entrada
+                        // antes de tirar a "foto" — evita barras/linhas cortadas.
+                        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                        Object.values(charts).forEach(c => { try { c && c.resize(); } catch (e) { /* ignora */ } });
+                        await new Promise(r => setTimeout(r, 850));
+                        target = document.getElementById(tab.id);
+                        if (target) {
+                            tabelasDetalhamento = target.querySelectorAll('#consumo-caminhao-tabela, #consumo-colhedoras-tabela');
+                            tabelasDetalhamento.forEach(el => el.style.display = 'none');
+                        }
+                    }
                     if (!target) continue;
 
-                    // Oculta tabelas de detalhamento (caminhão/colhedoras) durante a captura.
-                    const tabelasDetalhamento = target.querySelectorAll('#consumo-caminhao-tabela, #consumo-colhedoras-tabela');
-                    tabelasDetalhamento.forEach(el => el.style.display = 'none');
-
-                    // Bloco de título da aba — reserva ~25mm. Se não couber
-                    // no que sobrou da página atual, aí sim quebra página.
-                    const ALTURA_TITULO_MM = 25;
-                    if (!primeiraAba && cursorYmm + ALTURA_TITULO_MM > pageHmm) {
-                        pdf.addPage();
-                        cursorYmm = RP_MARGEM_MM;
-                    }
-                    pdf.setFontSize(20);
-                    pdf.setTextColor(20, 20, 20);
-                    pdf.text(rpTituloParaPDF(tab.titulo), 15, cursorYmm + 10);
-                    pdf.setFontSize(10);
-                    pdf.setTextColor(120, 120, 120);
-                    pdf.text('Gerado em ' + new Date().toLocaleString('pt-BR'), 15, cursorYmm + 18);
-                    cursorYmm += ALTURA_TITULO_MM;
-                    primeiraAba = false;
-
                     try {
-                        // Garante offset de rolagem zerado antes de medir/capturar —
-                        // se a página real estiver rolada, o html2canvas soma esse
-                        // deslocamento ao clonar o DOM em pedaços do tamanho da
-                        // janela, e o pedaço da "costura" pode acabar pintado duas
-                        // vezes (era a causa do "Filtrar" duplicado com uma faixa
-                        // cinza no meio, sempre bem no topo do que estava visível
-                        // no momento da rolagem).
-                        window.scrollTo(0, 0);
-                        await new Promise(r => requestAnimationFrame(r));
-
                         const rect = target.getBoundingClientRect();
-                        const targetW = Math.min(rect.width || target.scrollWidth, 1920);
-                        const targetH = target.scrollHeight || rect.height;
+                        // Largura NATURAL real do conteúdo — nunca reduzida artificialmente.
+                        // Antes havia um teto de 1920px aqui (Math.min(rect.width, 1920)) que,
+                        // em telas/monitores largos, forçava o html2canvas a renderizar o
+                        // clone num "viewport" mais estreito do que o layout real. Como
+                        // grids (.main-grid), tabelas e principalmente os <canvas> do
+                        // Chart.js (que têm largura em pixels fixada na criação do gráfico,
+                        // não relativa) NÃO se reencaixam nesse viewport reduzido, o
+                        // conteúdo que não coube ultrapassava os limites da captura e era
+                        // cortado — sem erro, sem aviso (ex.: card "Acumulado" e a legenda
+                        // "Frente 16..." somem à direita). A captura agora sempre usa a
+                        // MESMA largura que já está sendo exibida na tela, então nada
+                        // reflui de forma diferente e nada fica de fora do "print".
+                        const targetW = Math.max(rect.width || 0, target.scrollWidth || 0);
+                        const targetH = Math.max(rect.height || 0, target.scrollHeight || 0);
                         if (targetH > 0 && targetW > 0) {
+                            // Escala dinâmica: em conteúdos muito altos (ex.: Densidade de
+                            // Carga ou Análise Balança com a safra completa) ou muito largos
+                            // (monitores ultrawide), scale:3 fixo pode gerar um canvas maior
+                            // que o limite suportado pelo navegador, fazendo o html2canvas
+                            // truncar a imagem em silêncio (sem erro, sem aviso — o conteúdo
+                            // simplesmente some a partir de certo ponto). Por isso limitamos
+                            // a altura E a largura finais do canvas a um teto seguro,
+                            // reduzindo a ESCALA (nunca a largura de captura) quando
+                            // necessário — isso preserva o layout e só reduz a resolução.
+                            const RP_CANVAS_MAX_H_PX = 14000; // teto seguro de altura (px) pós-escala
+                            const RP_CANVAS_MAX_W_PX = 14000; // teto seguro de largura (px) pós-escala
+                            const scale = Math.min(3, RP_CANVAS_MAX_H_PX / targetH, RP_CANVAS_MAX_W_PX / targetW);
                             const canvas = await html2canvas(target, {
                                 backgroundColor: '#ffffff',
-                                scale: 2,
+                                scale: scale,
                                 useCORS: true,
                                 allowTaint: true,
                                 logging: false,
@@ -9902,21 +10008,30 @@
                                 windowWidth: targetW,
                                 windowHeight: targetH,
                                 scrollX: 0,
-                                scrollY: 0
+                                scrollY: tab.key === 'relproducao' ? 0 : -window.scrollY
                             });
-                            cursorYmm = rpAdicionarCanvasFluido(pdf, canvas, pageWmm, pageHmm, cursorYmm);
+
+                            const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+                            rpMontarPaginasPDF(pdf, canvas, pdf.internal.pageSize.getWidth() || 210, 297);
+                            // Remove a página em branco padrão criada pelo construtor do
+                            // jsPDF (só pode ser removida depois que há outra página).
+                            if (pdf.internal.getNumberOfPages() > 1) pdf.deletePage(1);
+                            pdf.save('relatorio-' + tab.arquivo + '-' + carimboArquivo + '.pdf');
                         }
                     } catch (errAba) {
+                        algumaFalhou = true;
                         console.warn('Falha ao capturar aba', tab.key, errAba);
                     } finally {
                         tabelasDetalhamento.forEach(el => el.style.display = '');
+                        if (tab.key === 'relproducao') rpDestruirClonePDF();
                     }
+
+                    // Pequena pausa entre downloads para o navegador não bloquear
+                    // múltiplos arquivos disparados em sequência.
+                    await new Promise(r => setTimeout(r, 400));
                 }
 
-                const nomeArquivo = 'relatorio-completo-agrosync-' +
-                    new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.pdf';
-                pdf.save(nomeArquivo);
-                showToast('📄 PDF de todas as abas exportado com sucesso!', '#16a34a');
+                showToast(algumaFalhou ? '⚠️ Falha ao gerar o PDF desta aba.' : '📄 PDF da aba atual exportado!', algumaFalhou ? '#f59e0b' : '#16a34a');
             } catch (err) {
                 console.warn('Exportação PDF:', err);
                 showToast('❌ Não foi possível gerar o PDF.', '#dc2626');
