@@ -4825,56 +4825,6 @@
         function espelhoPublicarTudo(origem) {
             espelhoPublicarProducao(origem);
             espelhoPublicarConsumo(origem);
-            espelhoPublicarRelProducao(origem);
-        }
-
-        // ── Rel. Produção (METAS.xlsx + Potencial.xlsx) — documento PRÓPRIO
-        // no Firestore, separado de "espelhoProducao". Motivo: "espelhoProducao"
-        // já carrega balanceData/coaData/horariaRaw/densidadeRaw da SAFRA
-        // COMPLETA e fica perto do teto de 1MB por documento do Firestore;
-        // metas/potencial são pequenos, mas empilhar em cima de um documento
-        // já quase cheio faz a escrita INTEIRA falhar (nada é publicado, nem
-        // as abas que já funcionavam) — daí o toast "dados grandes demais?".
-        // Um documento separado isola o risco: mesmo que a safra cresça e
-        // "espelhoProducao" fique maior, Rel. Produção continua publicando
-        // normalmente, e vice-versa.
-        let espelhoSaveTimerRelProducao = null;
-        function espelhoPublicarRelProducao(origem) {
-            if (espelhoModoEspectador) return;
-            clearTimeout(espelhoSaveTimerRelProducao);
-            espelhoSaveTimerRelProducao = setTimeout(() => {
-                aoAutenticar(() => {
-                    const ref = espelhoGetDoc('espelhoRelProducao');
-                    if (!ref || !window.firebase) return;
-                    const payload = {
-                        origem: origem || '',
-                        potencialData: potencialData,
-                        potencialLoaded: potencialLoaded,
-                        metasPorFrente: metasPorFrente,
-                        metasLoaded: metasLoaded,
-                        _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
-                    };
-                    ref.set(payload, { merge: true }).catch(err => {
-                        console.warn('[espelho] falha ao publicar dados de Rel. Produção (' + (err && err.code || 'erro') + '):', err);
-                        if (typeof showToast === 'function') showToast('⚠️ Falha ao publicar espelho de Rel. Produção', '#dc2626');
-                    });
-                });
-            }, ESPELHO_SAVE_DEBOUNCE_MS);
-        }
-
-        function espelhoAplicarRelProducao(data) {
-            if (!data) return;
-            try {
-                potencialData = data.potencialData || {};
-                potencialLoaded = !!data.potencialLoaded;
-                metasPorFrente = data.metasPorFrente || [];
-                metasLoaded = !!data.metasLoaded;
-                espelhoRecebeuRelProducao = true;
-            } catch (err) {
-                console.error('[espelho] erro ao aplicar dados de Rel. Produção:', err);
-                return;
-            }
-            espelhoRenderTudo();
         }
 
         // ── Aplicação (lado "espectador") ────────────────────────────────
@@ -4884,7 +4834,6 @@
         let espelhoUltimoCarimboConsumo = '';
         let espelhoRecebeuProducao = false;
         let espelhoRecebeuConsumo = false;
-        let espelhoRecebeuRelProducao = false;
 
         // Painel de status visível — é o que faltava: sem isso, ficar
         // "aguardando dados" e "deu erro" pareciam a mesma coisa (tela em
@@ -4984,7 +4933,7 @@
         // carregamento normal de pasta, só que chamadas de uma vez só, sem
         // depender de qual aba está ativa no momento.
         function espelhoRenderTudo() {
-            if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo && !espelhoRecebeuRelProducao) return; // ainda não chegou nada, deixa o painel de status como está
+            if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo) return; // ainda não chegou nada, deixa o painel de status como está
 
             const origem = espelhoUltimoOrigemProducao || espelhoUltimoOrigemConsumo || '?';
             const carimbo = espelhoUltimoCarimboProducao || espelhoUltimoCarimboConsumo || '';
@@ -5007,9 +4956,6 @@
             tentar(typeof renderControle !== 'undefined' && renderControle, 'Controle');
             tentar(typeof renderLiberacao !== 'undefined' && renderLiberacao, 'Liberação');
             tentar(typeof renderConsumo !== 'undefined' && renderConsumo, 'Consumo');
-            // Faltava também — mesmo com os dados chegando, ninguém mandava
-            // essa aba redesenhar no lado espectador.
-            tentar(typeof renderRelProducao !== 'undefined' && renderRelProducao, 'Rel. Produção');
 
             if (algumErro && typeof showToast === 'function') {
                 showToast('⚠️ Alguma aba não renderizou corretamente — veja o console (F12)', '#dc2626');
@@ -5021,7 +4967,6 @@
             espelhoDesligarEspectador();
             espelhoRecebeuProducao = false;
             espelhoRecebeuConsumo = false;
-            espelhoRecebeuRelProducao = false;
             espelhoStatusEsconder();
             const uploadEl = document.getElementById('uploadPrompt');
             if (uploadEl) uploadEl.classList.remove('hidden');
@@ -5037,7 +4982,6 @@
             espelhoModoEspectador = true;
             espelhoRecebeuProducao = false;
             espelhoRecebeuConsumo = false;
-            espelhoRecebeuRelProducao = false;
             setAutobanner_off();
             const uploadEl = document.getElementById('uploadPrompt');
             if (uploadEl) uploadEl.classList.add('hidden');
@@ -5045,8 +4989,7 @@
 
             const refProducao = espelhoGetDoc('espelhoProducao');
             const refConsumo = espelhoGetDoc('espelhoConsumo');
-            const refRelProducao = espelhoGetDoc('espelhoRelProducao');
-            if (!refProducao || !refConsumo || !refRelProducao) {
+            if (!refProducao || !refConsumo) {
                 espelhoStatus('⚠️', 'Sincronização indisponível', 'Verifique a internet e recarregue a página.');
                 return;
             }
@@ -5060,7 +5003,7 @@
 
                 espelhoUnsubs.push(refProducao.onSnapshot(snap => {
                     if (!snap.exists) {
-                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo && !espelhoRecebeuRelProducao) {
+                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo) {
                             espelhoStatus('👁️', 'Aguardando dados…', 'Ainda não chegou nenhum dado de produção/balança do computador de origem.');
                         }
                         return;
@@ -5073,7 +5016,7 @@
 
                 espelhoUnsubs.push(refConsumo.onSnapshot(snap => {
                     if (!snap.exists) {
-                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo && !espelhoRecebeuRelProducao) {
+                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo) {
                             espelhoStatus('👁️', 'Aguardando dados…', 'Ainda não chegou nenhum dado de consumo do computador de origem.');
                         }
                         return;
@@ -5082,13 +5025,6 @@
                 }, err => {
                     console.error('[espelho] falha ao escutar dados de consumo:', err);
                     espelhoStatus('⚠️', 'Falha ao sincronizar', '(' + (err && err.code || 'erro') + ') — veja o console (F12) para detalhes.');
-                }));
-
-                espelhoUnsubs.push(refRelProducao.onSnapshot(snap => {
-                    if (!snap.exists) return; // opcional — não bloqueia o painel de status das outras abas
-                    espelhoAplicarRelProducao(snap.data());
-                }, err => {
-                    console.error('[espelho] falha ao escutar dados de Rel. Produção:', err);
                 }));
             });
         }
@@ -9994,8 +9930,20 @@
             const carimboArquivo = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
             let algumaFalhou = false;
 
+            // Gera o PDF SOMENTE da aba que está ativa/aberta no momento do
+            // clique — não percorre mais todas as abas de RP_TABS_PDF. Para
+            // gerar o PDF de outra aba, o usuário troca de aba na tela e
+            // clica em exportar novamente.
+            const tabsParaExportar = RP_TABS_PDF.filter(t => t.key === abaOriginalKey);
+            if (tabsParaExportar.length === 0) {
+                showToast('⚠️ Não é possível exportar PDF desta aba.', '#dc2626');
+                btn.disabled = false;
+                btn.innerHTML = textoOriginal;
+                return;
+            }
+
             try {
-                for (const tab of RP_TABS_PDF) {
+                for (const tab of tabsParaExportar) {
                     btn.innerHTML = '⏳ Gerando PDF… (' + tab.titulo + ')';
                     let target;
                     let tabelasDetalhamento = [];
@@ -10083,7 +10031,7 @@
                     await new Promise(r => setTimeout(r, 400));
                 }
 
-                showToast(algumaFalhou ? '⚠️ PDFs gerados, mas alguma aba falhou.' : '📄 PDFs de todas as abas exportados!', algumaFalhou ? '#f59e0b' : '#16a34a');
+                showToast(algumaFalhou ? '⚠️ Falha ao gerar o PDF desta aba.' : '📄 PDF da aba atual exportado!', algumaFalhou ? '#f59e0b' : '#16a34a');
             } catch (err) {
                 console.warn('Exportação PDF:', err);
                 showToast('❌ Não foi possível gerar o PDF.', '#dc2626');
