@@ -7488,6 +7488,17 @@
                     meta24h: a.meta
                 })).sort((a, b) => (parseInt(a.frente) || 0) - (parseInt(b.frente) || 0));
                 metasLoaded = metasPorFrente.length > 0;
+
+                // Meta Moagem/Dia padrão = soma da coluna "Meta" do METAS.xlsx.
+                // Toda vez que a planilha é (re)carregada, essa soma vira o novo
+                // padrão em REL. PRODUÇÃO, COLHEDORAS e TRANSPORTE (metaMoagemDiaria
+                // é uma única variável compartilhada, sincronizada via Firestore).
+                // Um ajuste manual feito depois em qualquer uma dessas abas passa a
+                // valer como o padrão vigente até a próxima atualização da planilha.
+                if (metasLoaded) {
+                    const somaMetaColuna = metasPorFrente.reduce((s, f) => s + (f.meta24h || 0), 0);
+                    if (somaMetaColuna > 0) setMetaMoagemDiaria(somaMetaColuna);
+                }
             } catch (err) {
                 console.error('[processMetasData] erro:', err);
             }
