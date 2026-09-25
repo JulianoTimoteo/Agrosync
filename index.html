@@ -7755,10 +7755,19 @@
                     return `<div class="kpi-card ${cls}" title="${r.tooltip}"><small>${label}</small><span class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</span></div>`;
                 }).join('')
                     + (() => {
-                        const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
-                        return `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>🔬 ANALISADO</small><span class="val">${totalCoa}</span></div>`
-                            + `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>📊 % ANALISADOS</small><span class="val">${rpFmtNum(pctAnalisado, 1)}%</span></div>`;
-                    })();
+    const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
+    const naoAnalisado = totalCoa - analisado;
+    return `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}">
+                <small>🔬 ANALISADO</small>
+                <span class="val">${totalCoa}</span>
+                <div class="meta-info" style="font-size:10px;line-height:1.3;">
+                    <span style="color:var(--color-success-text, #15803d);">✅ ${analisado} SIM</span>
+                    &nbsp;|&nbsp;
+                    <span style="color:var(--color-danger-text, #b91c1c);">❌ ${naoAnalisado} NÃO</span>
+                </div>
+            </div>`
+        + `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>📊 % ANALISADOS</small><span class="val">${rpFmtNum(pctAnalisado, 1)}%</span></div>`;
+})();
             } else {
                 statusHora.innerText = '';
                 statusGrid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#94a3b8;font-weight:700;padding:16px;">⏳ Carregue Potencial.xlsx para ver o status de caminhões e RPM.</div>';
