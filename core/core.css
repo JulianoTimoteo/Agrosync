@@ -3557,3 +3557,16 @@
         margin: 20px 16px;
     }
 }
+
+
+/* Custom label styles for Cargas Analisadas */
+.lbl-sim { color: #40800c; font-weight: 700; }
+.lbl-nao { color: #7f1d1d; font-weight: 700; }
+body.theme-dark .lbl-sim { color: var(--color-success-text); }
+body.theme-dark .lbl-nao { color: var(--color-danger-text); }
+body.exporting-pdf .rp-status-bad .lbl-sim,
+body.exporting-pdf .rp-status-bad .lbl-nao,
+body.exporting-pdf .clone-status-card.bad .lbl-sim,
+body.exporting-pdf .clone-status-card.bad .lbl-nao {
+    color: #ffffff !important;
+}

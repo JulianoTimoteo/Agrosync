@@ -3302,9 +3302,9 @@ Chart.register(ChartDataLabels);
                 <small>🔬 Total Cargas</small>
                 <span class="val">${totalCoa}</span>
                 <div class="meta-info" style="font-size:10px;line-height:1.3;">
-                    <span style="color:darkgreen; font-weight:700;">✅ ${analisado} SIM</span>
+                    <span class="lbl-sim">✅ ${analisado} SIM</span>
                     &nbsp;|&nbsp;
-                    <span style="color:darkred; font-weight:700;">❌ ${naoAnalisado} NÃO</span>
+                    <span class="lbl-nao">❌ ${naoAnalisado} NÃO</span>
                 </div>
             </div>`
         + `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>📊 % ANALISADOS</small><span class="val">${rpFmtNum(pctAnalisado, 1)}%</span></div>`;
@@ -5254,9 +5254,9 @@ Chart.register(ChartDataLabels);
                 <div class="lbl">🔬 Total Cargas</div>
                 <div class="val">${totalCoa}</div>
                 <div class="meta-info" style="font-size:10px;line-height:1.3;margin-top:4px;">
-                    <span style="color:darkgreen; font-weight:700;">✅ ${analisadoCount} SIM</span>
+                    <span class="lbl-sim">✅ ${analisadoCount} SIM</span>
                     &nbsp;|&nbsp;
-                    <span style="color:darkred; font-weight:700;">❌ ${naoAnalisadoCount} NÃO</span>
+                    <span class="lbl-nao">❌ ${naoAnalisadoCount} NÃO</span>
                 </div>
             </div>`;
             statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}"><div class="lbl">📊 % ANALISADOS</div><div class="val">${rpFmtNum(pctAnalisado, 1)}%</div></div>`;
@@ -5543,6 +5543,7 @@ Chart.register(ChartDataLabels);
 
             const textoOriginal = btn.innerHTML;
             btn.disabled = true;
+            document.body.classList.add('exporting-pdf');
 
             // Guarda a aba ativa atual para restaurar ao final.
             const abaOriginal = document.querySelector('.main-tab-content.active');
@@ -5658,6 +5659,7 @@ Chart.register(ChartDataLabels);
                 showToast('❌ Não foi possível gerar o PDF.', '#dc2626');
             } finally {
                 rpIrParaAba(abaOriginalKey);
+                document.body.classList.remove('exporting-pdf');
                 btn.disabled = false;
                 btn.innerHTML = textoOriginal;
             }
