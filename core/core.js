@@ -3486,6 +3486,7 @@ Chart.register(ChartDataLabels);
             const HORAS = HORAS_CICLO;
             const LABELS = HORAS.map(hh => String(hh).padStart(2, '0') + ':00');
             const corVerm = getToken('--color-danger', '#dc2626');
+            const corVerde = getToken('--color-success', '#22c55e');
             const corTxt = corDeTextoParaGrafico();
             const escuro = document.documentElement.getAttribute('data-theme') === 'dark';
             // Pílula de valor em cima da coluna: fundo preto/texto branco no modo
@@ -3551,8 +3552,8 @@ Chart.register(ChartDataLabels);
                 if (charts['rp-moagem-hora']) { charts['rp-moagem-hora'].destroy(); delete charts['rp-moagem-hora']; }
                 charts['rp-moagem-hora'] = new Chart(canvMoagem.getContext('2d'), {
                     type: 'bar',
-                    data: { labels: LABELS, datasets: [{ label: 'Toneladas', data: totalPorHora, backgroundColor: rpCorBarras(totalPorHora, metaMoagemHora, '#40800c'), borderRadius: 3, datalabels: rpDatalabels(1) }] },
-                    plugins: [rpMetaLinePlugin(() => metaMoagemHora, '#3b82f6')],
+                    data: { labels: LABELS, datasets: [{ label: 'Toneladas', data: totalPorHora, backgroundColor: rpCorBarras(totalPorHora, metaMoagemHora, corVerde), borderRadius: 3, datalabels: rpDatalabels(1) }] },
+                    plugins: [rpMetaLinePlugin(() => metaMoagemHora, '#f59e0b')],
                     options: {
                         responsive: true, maintainAspectRatio: false,
                         layout: { padding: { top: 26, right: 60 } },
@@ -3584,7 +3585,7 @@ Chart.register(ChartDataLabels);
                 if (charts['rp-potencial']) { charts['rp-potencial'].destroy(); delete charts['rp-potencial']; }
                 charts['rp-potencial'] = new Chart(canvPot.getContext('2d'), {
                     type: 'bar',
-                    data: { labels: LABELS, datasets: [{ label: 'Potencial', data: potArr, backgroundColor: rpCorBarras(potArr, rpMetas.potencial, '#3b82f6'), borderRadius: 3, datalabels: rpDatalabels(0) }] },
+                    data: { labels: LABELS, datasets: [{ label: 'Potencial', data: potArr, backgroundColor: rpCorBarras(potArr, rpMetas.potencial, corVerde), borderRadius: 3, datalabels: rpDatalabels(0) }] },
                     plugins: [rpMetaLinePlugin(() => rpMetas.potencial, '#f59e0b')],
                     options: {
                         responsive: true, maintainAspectRatio: false, spanGaps: false,
@@ -3610,7 +3611,7 @@ Chart.register(ChartDataLabels);
                 if (charts['rp-rpm']) { charts['rp-rpm'].destroy(); delete charts['rp-rpm']; }
                 charts['rp-rpm'] = new Chart(canvRpm.getContext('2d'), {
                     type: 'bar',
-                    data: { labels: LABELS, datasets: [{ label: 'RPM', data: rpmArr, backgroundColor: rpCorBarras(rpmArr, rpMetas.rpm, '#8b5cf6'), borderRadius: 3, datalabels: rpDatalabels(0) }] },
+                    data: { labels: LABELS, datasets: [{ label: 'RPM', data: rpmArr, backgroundColor: rpCorBarras(rpmArr, rpMetas.rpm, corVerde), borderRadius: 3, datalabels: rpDatalabels(0) }] },
                     plugins: [rpMetaLinePlugin(() => rpMetas.rpm, '#f59e0b')],
                     options: {
                         responsive: true, maintainAspectRatio: false,
