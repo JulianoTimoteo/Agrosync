@@ -3559,31 +3559,19 @@
 }
 
 /* Custom label styles for Cargas Analisadas */
-/* 1. Versão Clara Online (Default) */
+/* Online: usa as variaveis de tema identicas aos outros cards */
 .lbl-sim {
-    color: #40800c !important;
-    font-weight: 700 !important;
+    color: var(--color-success-text, #15803d);
+    font-weight: 700;
 }
 .lbl-nao {
-    color: #991b1b !important;
-    font-weight: 700 !important;
+    color: var(--color-danger-text, #991b1b);
+    font-weight: 700;
 }
 
-/* 2. Versão Escura (Dark Mode) Online */
-[data-theme="dark"] .lbl-sim,
-.theme-dark .lbl-sim,
-body.theme-dark .lbl-sim {
-    color: var(--color-success-text, #86efac) !important;
-    font-weight: 700 !important;
-}
-[data-theme="dark"] .lbl-nao,
-.theme-dark .lbl-nao,
-body.theme-dark .lbl-nao {
-    color: var(--color-danger-text, #fca5a5) !important;
-    font-weight: 700 !important;
-}
-
-/* 3. Exportação para PDF (Clone do Relatório ou Modo Impressão) */
+/* PDF / Clone Cards: forca texto 100% branco para contraste nos cards coloridos */
+.clone-status-card .lbl-sim,
+.clone-status-card .lbl-nao,
 #rp-pdf-clone .lbl-sim,
 #rp-pdf-clone .lbl-nao,
 .exporting-pdf .lbl-sim,
