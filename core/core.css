@@ -3559,7 +3559,7 @@
 }
 
 /* Custom label styles for Cargas Analisadas */
-/* Online: usa as variaveis de tema identicas aos outros cards */
+/* Padrão para cards sem background colorido */
 .lbl-sim {
     color: var(--color-success-text, #15803d);
     font-weight: 700;
@@ -3569,7 +3569,11 @@
     font-weight: 700;
 }
 
-/* PDF / Clone Cards: forca texto 100% branco para contraste nos cards coloridos */
+/* Quando o card for de STATUS (ok/bad), no PDF ou no Clone, TUDO dentro dele é BRANCO */
+.rp-status-ok .lbl-sim,
+.rp-status-ok .lbl-nao,
+.rp-status-bad .lbl-sim,
+.rp-status-bad .lbl-nao,
 .clone-status-card .lbl-sim,
 .clone-status-card .lbl-nao,
 #rp-pdf-clone .lbl-sim,
