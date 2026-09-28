@@ -263,8 +263,12 @@ window.runExpertAnalysis = function(type) {
         }
     }
 
+    // Evitar sobreposição de múltiplos relatórios
+    const existingModal = document.getElementById('expert-analysis-modal-container');
+    if (existingModal) existingModal.remove();
+
     // Criar e injetar modal no DOM
-    const modalId = 'expert-analysis-modal-' + Date.now();
+    const modalId = 'expert-analysis-modal-container';
     const modalHtml = `
     <div id="${modalId}" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.6); z-index:9999; display:flex; justify-content:center; align-items:center; backdrop-filter:blur(4px); opacity:0; transition:opacity 0.3s ease;">
         <div style="background:#ffffff; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,0.2); width:90%; max-width:500px; max-height:85vh; overflow-y:auto; padding:24px; position:relative; transform:translateY(20px); transition:transform 0.3s ease;">
