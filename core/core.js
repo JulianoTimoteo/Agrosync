@@ -3812,7 +3812,7 @@ Chart.register(ChartDataLabels);
 
             if (fileStatus) fileStatus.innerHTML = statusHtml;
             const msgDiv = document.getElementById('statusMsg');
-            if (balanceLoaded && solinftecLoaded) { msgDiv.innerHTML = '✅ Ambos os arquivos carregados com sucesso!'; msgDiv.className = 'status-success'; }
+            if (balanceLoaded && solinftecLoaded) { msgDiv.innerHTML = ''; msgDiv.className = ''; if(typeof showToast==='function'){showToast('✅ Ambos os arquivos carregados com sucesso!', '#16a34a');} }
             else if (balanceLoaded || solinftecLoaded) { msgDiv.innerHTML = '⚠️ Apenas um dos arquivos foi carregado.'; msgDiv.className = 'status-warning'; }
             else { msgDiv.innerHTML = '❌ Nenhum arquivo encontrado. Selecione a pasta com os arquivos.'; msgDiv.className = 'status-error'; }
         }
