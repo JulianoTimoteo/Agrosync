@@ -3299,12 +3299,12 @@ Chart.register(ChartDataLabels);
     const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
     const naoAnalisado = totalCoa - analisado;
     return `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}">
-                <small>🔬 ANALISADO</small>
+                <small>🔬 Total Cargas</small>
                 <span class="val">${totalCoa}</span>
                 <div class="meta-info" style="font-size:10px;line-height:1.3;">
-                    <span style="color:var(--color-success-text, #15803d);">✅ ${analisado} SIM</span>
+                    <span style="color:darkgreen; font-weight:700;">✅ ${analisado} SIM</span>
                     &nbsp;|&nbsp;
-                    <span style="color:var(--color-danger-text, #b91c1c);">❌ ${naoAnalisado} NÃO</span>
+                    <span style="color:darkred; font-weight:700;">❌ ${naoAnalisado} NÃO</span>
                 </div>
             </div>`
         + `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>📊 % ANALISADOS</small><span class="val">${rpFmtNum(pctAnalisado, 1)}%</span></div>`;
@@ -5251,12 +5251,12 @@ Chart.register(ChartDataLabels);
             const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
             const naoAnalisadoCount = totalCoa - analisadoCount;
             statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}">
-                <div class="lbl">🔬 Analisado</div>
+                <div class="lbl">🔬 Total Cargas</div>
                 <div class="val">${totalCoa}</div>
                 <div class="meta-info" style="font-size:10px;line-height:1.3;margin-top:4px;">
-                    <span style="color:#86efac;">✅ ${analisadoCount} SIM</span>
+                    <span style="color:darkgreen; font-weight:700;">✅ ${analisadoCount} SIM</span>
                     &nbsp;|&nbsp;
-                    <span style="color:#fca5a5;">❌ ${naoAnalisadoCount} NÃO</span>
+                    <span style="color:darkred; font-weight:700;">❌ ${naoAnalisadoCount} NÃO</span>
                 </div>
             </div>`;
             statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}"><div class="lbl">📊 % ANALISADOS</div><div class="val">${rpFmtNum(pctAnalisado, 1)}%</div></div>`;
