@@ -3558,15 +3558,35 @@
     }
 }
 
-
 /* Custom label styles for Cargas Analisadas */
-.lbl-sim { color: #40800c; font-weight: 700; }
-.lbl-nao { color: #7f1d1d; font-weight: 700; }
-body.theme-dark .lbl-sim { color: var(--color-success-text); }
-body.theme-dark .lbl-nao { color: var(--color-danger-text); }
-body.exporting-pdf .rp-status-bad .lbl-sim,
-body.exporting-pdf .rp-status-bad .lbl-nao,
-body.exporting-pdf .clone-status-card.bad .lbl-sim,
-body.exporting-pdf .clone-status-card.bad .lbl-nao {
+/* 1. Versão Clara Online (Default) */
+.lbl-sim {
+    color: #40800c !important;
+    font-weight: 700 !important;
+}
+.lbl-nao {
+    color: #991b1b !important;
+    font-weight: 700 !important;
+}
+
+/* 2. Versão Escura (Dark Mode) Online */
+[data-theme="dark"] .lbl-sim,
+.theme-dark .lbl-sim,
+body.theme-dark .lbl-sim {
+    color: var(--color-success-text, #86efac) !important;
+    font-weight: 700 !important;
+}
+[data-theme="dark"] .lbl-nao,
+.theme-dark .lbl-nao,
+body.theme-dark .lbl-nao {
+    color: var(--color-danger-text, #fca5a5) !important;
+    font-weight: 700 !important;
+}
+
+/* 3. Exportação para PDF (Clone do Relatório ou Modo Impressão) */
+#rp-pdf-clone .lbl-sim,
+#rp-pdf-clone .lbl-nao,
+.exporting-pdf .lbl-sim,
+.exporting-pdf .lbl-nao {
     color: #ffffff !important;
 }
