@@ -939,7 +939,10 @@
 
                     <!-- Tabela grande por Frente -->
                     <div class="balance-card" style="margin-top:16px;">
-                        <div class="balance-card-title">📋 Frentes · Meta × Planejado × Realizado</div>
+                        <div class="balance-card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>📋 Frentes · Meta × Planejado × Realizado</span>
+                            <button onclick="window.runExpertAnalysis('frentes')" style="background:transparent; border:none; cursor:pointer; font-size:20px; transition:transform 0.2s ease, filter 0.2s ease; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1)); margin-left: 8px;" onmouseover="this.style.transform='scale(1.2)'; this.style.filter='drop-shadow(0 0 8px #3b82f6) drop-shadow(0 0 12px #3b82f6)'" onmouseout="this.style.transform='scale(1)'; this.style.filter='drop-shadow(0 2px 4px rgba(0,0,0,0.1))'" title="Análise Rápida de Especialista">🪄</button>
+                        </div>
                         <div class="table-container" style="margin-top:10px;">
                             <table class="top10-table" id="rp-tabela-frentes" style="font-size:12px;">
                                 <thead><tr>
@@ -974,7 +977,10 @@
 
                     <!-- Detalhe por Frente/Descrição/Densidade -->
                     <div class="balance-card" style="margin-top:16px;">
-                        <div class="balance-card-title">📦 Frente · Tipo de Veículo · Líquido · Densidade · Viagens</div>
+                        <div class="balance-card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>📦 Frente · Tipo de Veículo · Líquido · Densidade · Viagens</span>
+                            <button onclick="window.runExpertAnalysis('detalhe')" style="background:transparent; border:none; cursor:pointer; font-size:20px; transition:transform 0.2s ease, filter 0.2s ease; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1)); margin-left: 8px;" onmouseover="this.style.transform='scale(1.2)'; this.style.filter='drop-shadow(0 0 8px #3b82f6) drop-shadow(0 0 12px #3b82f6)'" onmouseout="this.style.transform='scale(1)'; this.style.filter='drop-shadow(0 2px 4px rgba(0,0,0,0.1))'" title="Análise Rápida de Especialista">🪄</button>
+                        </div>
                         <div class="table-container" style="margin-top:10px;">
                             <table class="top10-table" id="rp-tabela-detalhe" style="font-size:12px;">
                                 <thead><tr><th>Frente</th><th>Tipo</th><th>Líquido</th><th>Densidade</th><th>Viagens</th></tr></thead>

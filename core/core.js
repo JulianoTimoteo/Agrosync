@@ -7524,4 +7524,4 @@ window.toggleDispDataset = function(index, btnId) {
 
 window.rpCalcPorFrente = typeof rpCalcPorFrente !== 'undefined' ? rpCalcPorFrente : null;
 window.getPotencialData = function() { return typeof potencialData !== 'undefined' ? potencialData : {}; };
-
+window.rpCalcDetalhe = typeof rpCalcDetalhe !== 'undefined' ? rpCalcDetalhe : null;
