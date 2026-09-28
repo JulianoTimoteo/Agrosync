@@ -7506,3 +7506,22 @@ Chart.register(ChartDataLabels);
             if (typeof showToast === 'function') showToast('✅ ' + nomeArquivo + ' exportado!', '#16a34a');
         }
         // ═══════════════════════ FIM DO MÓDULO CONSUMO ══════════════════════
+
+// Custom toggles for charts
+window.toggleDispDataset = function(index, btnId) {
+    if (typeof charts === 'undefined' || !charts['rp-disp']) return;
+    const chart = charts['rp-disp'];
+    const meta = chart.getDatasetMeta(index);
+    meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+    chart.update();
+    const btn = document.getElementById(btnId);
+    if (btn) {
+        btn.style.opacity = meta.hidden ? '0.5' : '1';
+        btn.style.filter = meta.hidden ? 'grayscale(100%)' : 'none';
+    }
+};
+
+
+window.rpCalcPorFrente = typeof rpCalcPorFrente !== 'undefined' ? rpCalcPorFrente : null;
+window.getPotencialData = function() { return typeof potencialData !== 'undefined' ? potencialData : {}; };
+
