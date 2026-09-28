@@ -3559,7 +3559,7 @@
 }
 
 /* Custom label styles for Cargas Analisadas */
-/* Padrão para cards sem background colorido */
+/* Modo Online (Claro & Escuro): SIM verde (verde escuro no claro), NÃO vermelho (vermelho escuro no claro) */
 .lbl-sim {
     color: var(--color-success-text, #15803d);
     font-weight: 700;
@@ -3569,15 +3569,11 @@
     font-weight: 700;
 }
 
-/* Quando o card for de STATUS (ok/bad), no PDF ou no Clone, TUDO dentro dele é BRANCO */
-.rp-status-ok .lbl-sim,
-.rp-status-ok .lbl-nao,
-.rp-status-bad .lbl-sim,
-.rp-status-bad .lbl-nao,
-.clone-status-card .lbl-sim,
-.clone-status-card .lbl-nao,
+/* APENAS na exportação para PDF (Clone PDF do relatório): texto 100% BRANCO */
 #rp-pdf-clone .lbl-sim,
 #rp-pdf-clone .lbl-nao,
+.clone-status-card .lbl-sim,
+.clone-status-card .lbl-nao,
 .exporting-pdf .lbl-sim,
 .exporting-pdf .lbl-nao {
     color: #ffffff !important;
