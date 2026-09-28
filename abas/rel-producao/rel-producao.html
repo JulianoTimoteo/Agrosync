@@ -1,0 +1,152 @@
+            <div id="main-relproducao" class="main-tab-content">
+                <div id="relproducao-no-data" style="text-align:center;padding:60px;color:#94a3b8;font-weight:700;font-size:14px;">
+                    ⏳ Carregue Producao.xlsx + METAS.xlsx + Potencial.xlsx para montar o relatório.
+                </div>
+                <div id="relproducao-content" style="display:none;">
+
+                    <!-- Cards principais: Realizado / Projeção / Meta -->
+                    <div class="kpi-grid" style="margin-bottom:16px; grid-template-columns:1fr 1fr 1fr;">
+                        <div class="kpi-card" id="rp-card-realizado" style="background:var(--color-bg-surface);">
+                            <small>✅ REALIZADO</small>
+                            <span class="val" id="rp-val-realizado" style="font-size:2rem; color:var(--color-text-primary);">0 t</span>
+                        </div>
+                        <div class="kpi-card" id="rp-card-projecao" style="background:var(--color-warning-bg); border-bottom-color:var(--color-warning);">
+                            <small>⏱️ PROJEÇÃO DE MOAGEM</small>
+                            <span class="val" id="rp-val-projecao" style="font-size:2rem; color:var(--color-warning-text);">0 t</span>
+                        </div>
+                        <div class="kpi-card" id="rp-card-meta" style="background:var(--color-success-bg); border-bottom-color:var(--color-success);">
+                            <small>🎯 META DE MOAGEM</small>
+                            <span class="val" id="rp-val-meta" style="font-size:2rem; color:var(--color-success-text);">0 t</span>
+                        </div>
+                    </div>
+
+                    <!-- Donut: Cana Própria × Fornecedor (coluna "Tipo Proprietario (F.A.)" do Producao.xlsx) -->
+                    <div class="balance-card" style="margin-bottom:16px;">
+                        <div class="balance-card-title">🥧 Entrada de Cana — Própria × Fornecedor</div>
+                        <div class="rp-donut-grid">
+                            <div>
+                                <div class="coa-chart-wrap" style="height:200px;">
+                                    <canvas id="rp-propterc-donut-canvas"></canvas>
+                                    <div class="coa-center-text">
+                                        <div class="coa-pct-value" id="rp-propterc-pct-center">—</div>
+                                        <div class="coa-pct-label">Própria</div>
+                                    </div>
+                                </div>
+                                <div class="coa-legend">
+                                    <div class="coa-legend-item">
+                                        <div class="coa-legend-dot" style="background:#40800c;"></div>
+                                        <span id="rp-propterc-legend-prop">Própria</span>
+                                    </div>
+                                    <div class="coa-legend-item">
+                                        <div class="coa-legend-dot" style="background:#e9a23b;"></div>
+                                        <span id="rp-propterc-legend-terc">Fornecedor</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rp-donut-stats">
+                                <div class="coa-stat" style="background:var(--color-primary-soft);">
+                                    <span class="coa-stat-val" style="color:var(--color-primary);" id="rp-propterc-total-prop">—</span>
+                                    <span class="coa-stat-lbl">Total Própria</span>
+                                </div>
+                                <div class="coa-stat" style="background:var(--color-secondary-soft);">
+                                    <span class="coa-stat-val" style="color:var(--color-secondary);" id="rp-propterc-total-terc">—</span>
+                                    <span class="coa-stat-lbl">Total Fornecedor</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Status de caminhões / RPM (último snapshot do Potencial.xlsx) + Análise COA -->
+                    <div class="balance-card" id="rp-status-wrap">
+                        <div class="balance-card-title">🚛 Status de Caminhões · Potencial.xlsx <span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;"></span></div>
+                        <div class="rp-status-grid" id="rp-status-grid" style="margin-top:10px;"></div>
+                    </div>
+
+                    <!-- Tabela grande por Frente -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📋 Frentes · Meta × Planejado × Realizado</div>
+                        <div class="table-container" style="margin-top:10px;">
+                            <table class="top10-table" id="rp-tabela-frentes" style="font-size:12px;">
+                                <thead><tr>
+                                    <th>Frente</th><th>F.Agr</th><th>Raio Médio</th><th>Meta 24h</th><th>Meta Hora</th>
+                                    <th>Planejado</th><th>Realizado</th><th>Diferença</th><th>Densidade</th>
+                                    <th>Viagens</th><th>Análise%</th><th>Projeção dia</th><th>Saldo 24H</th>
+                                </tr></thead>
+                                <tbody id="rp-tabela-frentes-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Produção Canavieiro + Raio Médio + Top rankings -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;margin-top:16px;" class="rp-grid-4">
+                        <div class="balance-card" style="display:flex;flex-direction:column;">
+                            <div class="balance-card-title">📊 Produção Canavieiro</div>
+                            <div style="flex:1;min-height:200px;position:relative;"><canvas id="rp-canvieiro-canvas"></canvas></div>
+                        </div>
+                        <div class="balance-card" style="display:flex;flex-direction:column;">
+                            <div class="balance-card-title">📊 Raio Médio</div>
+                            <div style="flex:1;min-height:200px;position:relative;"><canvas id="rp-raiomedio-canvas"></canvas></div>
+                        </div>
+                        <div class="balance-card">
+                            <div class="balance-card-title">🚛 Top Caminhões</div>
+                            <div class="table-container" style="margin-top:10px;"><table class="top10-table" id="rp-top-caminhoes"><tbody></tbody></table></div>
+                        </div>
+                        <div class="balance-card">
+                            <div class="balance-card-title">🚜 Top Colhedoras</div>
+                            <div class="table-container" style="margin-top:10px;"><table class="top10-table" id="rp-top-colhedoras"><tbody></tbody></table></div>
+                        </div>
+                    </div>
+
+                    <!-- Detalhe por Frente/Descrição/Densidade -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📦 Frente · Tipo de Veículo · Líquido · Densidade · Viagens</div>
+                        <div class="table-container" style="margin-top:10px;">
+                            <table class="top10-table" id="rp-tabela-detalhe" style="font-size:12px;">
+                                <thead><tr><th>Frente</th><th>Tipo</th><th>Líquido</th><th>Densidade</th><th>Viagens</th></tr></thead>
+                                <tbody id="rp-tabela-detalhe-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Gráficos horários -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">📊 Moagem Hora (Toneladas)</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <span id="rp-meta-moagem-hora-display" style="width:90px;padding:6px 8px;font-size:13px;font-weight:800;text-align:right;display:inline-block;color:var(--color-text-primary);">—</span>
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-moagem-hora-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">🌾 Potencial de Colheita</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <input id="rp-meta-potencial" type="number" min="0" step="1" oninput="rpAtualizarMeta('potencial', this.value)">
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-potencial-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">⚙️ Rotação da Moenda (RPM)</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <input id="rp-meta-rpm" type="number" min="0" step="0.1" oninput="rpAtualizarMeta('rpm', this.value)">
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-rpm-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📈 Disponibilidade — Transbordo / Colhedora / Caminhão</div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-disp-canvas"></canvas></div>
+                    </div>
+
+                </div>
+            </div>
+            <!-- ===== FIM ABA REL. PRODUÇÃO ===== -->
+
+        </div><!-- /#dashboardContent -->
+
+        <div id="statusMsg"></div>
+    </div>
+

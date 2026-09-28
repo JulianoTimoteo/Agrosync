@@ -1,0 +1,203 @@
+            <div id="main-lab" class="main-tab-content">
+                <div class="timeline-section" id="lab-timeline"></div>
+
+                <!-- ===== ANÁLISE COA (movido da aba Análise Balança) ===== -->
+                <div class="balance-card">
+                    <div class="balance-card-title" style="border-left-color: #7c3aed;">🔬 ANÁLISE COA — Percentual
+                        de Análise por Carga</div>
+                    <div class="coa-grid">
+
+                        <!-- Coluna esquerda: transporte + stats -->
+                        <div>
+                            <!-- Cobertura de análise COA por grupo de frente -->
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Cobertura de Análise por Grupo de Frente</div>
+                            <div class="h-bar-container">
+                                <div>
+                                    <div class="h-bar-label"><span>🟢 Própria (F08,10,11,12,13,14,15)</span><span
+                                            id="coa-txt-prop">0%</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="coa-bar-prop" class="h-bar-fill"
+                                            style="width:0%;background:#40800c;">0%</div>
+                                    </div>
+                                    <div class="meta-info" id="coa-prop-composicao">— cargas analisadas</div>
+                                </div>
+                                <div style="margin-top:12px;">
+                                    <div class="h-bar-label"><span>🟠 Terceira (F23,30,33,34,35,38,39)</span><span
+                                            id="coa-txt-terc">0%</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="coa-bar-terc" class="h-bar-fill"
+                                            style="width:0%;background:#e9a23b;">0%</div>
+                                    </div>
+                                    <div class="meta-info" id="coa-terc-composicao">— cargas analisadas</div>
+                                </div>
+                            </div>
+                            <div id="coa-grupo-destaque"
+                                style="font-size:11px;text-align:center;font-weight:700;color:#475569;margin-top:10px;padding:8px;background:#f8fafc;border-radius:8px;">
+                            </div>
+                            <div
+                                style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                📌 Meta mínima por grupo: 30% das cargas analisadas
+                            </div>
+                            <div id="coa-outras-frentes-nota"
+                                style="font-size:10px;text-align:center;color:#94a3b8;margin-top:4px;font-weight:600;font-style:italic;">
+                            </div>
+
+                            <hr class="coa-separator">
+
+                            <!-- Contagem de cargas -->
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Contagem de Cargas Únicas</div>
+                            <div class="coa-stats-row">
+                                <div class="coa-stat" style="background:#f8fafc;">
+                                    <span class="coa-stat-val" id="coa-total">—</span>
+                                    <span class="coa-stat-lbl">Total</span>
+                                </div>
+                                <div class="coa-stat" style="background:#dcfce7;">
+                                    <span class="coa-stat-val" style="color:#15803d;" id="coa-sim">—</span>
+                                    <span class="coa-stat-lbl">✅ SIM</span>
+                                </div>
+                                <div class="coa-stat" style="background:#fee2e2;">
+                                    <span class="coa-stat-val" style="color:#b91c1c;" id="coa-nao">—</span>
+                                    <span class="coa-stat-lbl">❌ NÃO</span>
+                                </div>
+                            </div>
+
+                            <div id="coa-status-badge" class="coa-meta-badge coa-meta-ruim"
+                                style="margin-top:12px;">
+                                Aguardando dados…
+                            </div>
+                        </div>
+
+                        <!-- Coluna direita: donut / corrida (flip no duplo clique) -->
+                        <div>
+                            <div id="coa-flip-title"
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Percentual Analisado</div>
+
+                            <div id="coa-flip-container" class="coa-flip-container" ondblclick="toggleCoaFlip()">
+                                <!-- Vista 1: donut SIM/NÃO -->
+                                <div id="coa-view-donut">
+                                    <div class="coa-chart-wrap">
+                                        <canvas id="coa-donut-canvas"></canvas>
+                                        <div class="coa-center-text">
+                                            <div class="coa-pct-value" id="coa-pct-center">—</div>
+                                            <div class="coa-pct-label">Analisado</div>
+                                        </div>
+                                    </div>
+                                    <div class="coa-legend">
+                                        <div class="coa-legend-item">
+                                            <div class="coa-legend-dot" id="coa-dot-sim" style="background:#22c55e;"></div>
+                                            <span id="coa-legend-sim">SIM</span>
+                                        </div>
+                                        <div class="coa-legend-item">
+                                            <div class="coa-legend-dot" style="background:#94a3b8;"></div>
+                                            <span id="coa-legend-nao">NÃO</span>
+                                        </div>
+                                    </div>
+                                    <div
+                                        style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                        📌 Meta mínima: 30% analisado | Abaixo = ⚠️ Ruim
+                                    </div>
+                                </div>
+
+                                <!-- Vista 2: corrida % análise por frente (08 → 39) -->
+                                <div id="coa-view-race" style="display:none;">
+                                    <div class="coa-race-wrap">
+                                        <canvas id="coa-frente-race-canvas"></canvas>
+                                    </div>
+                                    <div
+                                        style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                        📌 Ordenado por frente | 🟢 ≥ 30% · 🔴 &lt; 30%
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="coa-flip-hint">🔄 Duplo clique para alternar o gráfico</div>
+
+                            <div id="lab-coa-insights" class="coa-insights-box" style="margin-top:14px;"></div>
+                        </div>
+
+                    </div>
+                </div>
+                <!-- ===== FIM ANÁLISE COA ===== -->
+
+                <!-- ===== CARGAS POR HORA / TURNO ===== -->
+                <div class="balance-card" style="margin-top: 20px;">
+                    <div class="balance-card-title" style="border-left-color: #0891b2;">🕐 Cargas por Hora e Turno —
+                        Análise COA</div>
+
+                    <div class="lab-kpi-row">
+                        <div class="lab-kpi" style="background:#f8fafc;">
+                            <span class="lab-kpi-val" id="lab-total-cargas">—</span>
+                            <span class="lab-kpi-lbl">Total de Cargas</span>
+                        </div>
+                        <div class="lab-kpi" style="background:#dcfce7;">
+                            <span class="lab-kpi-val" style="color:#15803d;" id="lab-total-analisadas">—</span>
+                            <span class="lab-kpi-lbl">Cargas Analisadas</span>
+                        </div>
+                        <div class="lab-kpi" style="background:#e0f2fe;">
+                            <span class="lab-kpi-val" style="color:#0369a1;" id="lab-total-pct">—</span>
+                            <span class="lab-kpi-lbl">% Analisado</span>
+                        </div>
+                    </div>
+
+                    <div class="lab-grid">
+                        <!-- Coluna esquerda: tabela Turno/Hora -->
+                        <div>
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Cargas e Análise por Turno / Hora</div>
+                            <div class="table-container">
+                                <table class="top10-table lab-hora-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Turno</th>
+                                            <th>Hora</th>
+                                            <th>Cargas</th>
+                                            <th>Analisado</th>
+                                            <th>%</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lab-hora-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Coluna direita: mini tabela por turno + gráfico -->
+                        <div>
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                % Analisado por Turno</div>
+                            <div class="table-container">
+                                <table class="top10-table lab-turno-mini-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Turno</th>
+                                            <th>Cargas</th>
+                                            <th>Analisado</th>
+                                            <th>%</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lab-turno-tbody"></tbody>
+                                </table>
+                            </div>
+
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin:16px 0 10px;letter-spacing:.5px;">
+                                Cargas Totais × Analisadas por Hora</div>
+                            <div class="lab-chart-wrap">
+                                <canvas id="lab-hora-chart-canvas"></canvas>
+                            </div>
+                            <div
+                                style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                📌 Turno A: 08h–15h · Turno B: 16h–23h · Turno C: 00h–07h
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- ===== FIM CARGAS POR HORA / TURNO ===== -->
+            </div>
+
+            <!-- ===== ABA REL. PRODUÇÃO ===== -->

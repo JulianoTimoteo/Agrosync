@@ -1,0 +1,63 @@
+            <div id="main-liberacao" class="main-tab-content">
+                <div class="consumo-tabs-row">
+                    <div class="consumo-tabs">
+                        <button class="consumo-tab active" id="liberacao-subtab-ativos"
+                            onclick="switchLiberacaoSubTab('ativos')">🔓 Ativos</button>
+                        <button class="consumo-tab" id="liberacao-subtab-historico"
+                            onclick="switchLiberacaoSubTab('historico')">📜 Histórico</button>
+                    </div>
+                </div>
+
+                <div id="liberacao-painel-ativos">
+                    <div class="balance-card">
+                        <div class="balance-card-title">🔓 Controle de Liberação por Fazenda / Frente</div>
+                        <div class="liberacao-toolbar">
+                            <div class="liberacao-resumo" id="liberacao-resumo"></div>
+                        </div>
+                        <div id="liberacao-msg"></div>
+                        <div class="table-container">
+                            <table id="liberacao-table">
+                                <thead>
+                                    <tr>
+                                        <th>Cod.Fazenda</th>
+                                        <th>Desc.Fazenda</th>
+                                        <th>Liberação</th>
+                                        <th>Cod. Frente</th>
+                                        <th>Cana Processada</th>
+                                        <th>Controle</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liberacao-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="liberacao-painel-historico" style="display:none;">
+                    <div class="balance-card">
+                        <div class="balance-card-title">📜 Histórico de Liberações Encerradas</div>
+                        <div id="liberacao-historico-msg"></div>
+                        <div class="table-container">
+                            <table id="liberacao-historico-table">
+                                <thead>
+                                    <tr>
+                                        <th>Cod.Fazenda</th>
+                                        <th>Desc.Fazenda</th>
+                                        <th>Liberação</th>
+                                        <th>Cod. Frente</th>
+                                        <th>Meta</th>
+                                        <th>Acumulado Final</th>
+                                        <th>Ativado em</th>
+                                        <th>Encerrado em</th>
+                                        <th>Motivo</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liberacao-historico-tbody"></tbody>
+                            </table>
+                        </div>
+                        <div class="liberacao-paginacao" id="liberacao-historico-paginacao"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== ABA LAB ===== -->

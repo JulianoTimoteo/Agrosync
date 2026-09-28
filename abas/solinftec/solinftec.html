@@ -1,0 +1,52 @@
+            <div id="main-solinftec" class="main-tab-content active">
+                <div class="solinftec-tabs">
+                    <button class="solinftec-tab active" onclick="switchSolinftecTab('geral')">Geral</button>
+                    <button class="solinftec-tab" onclick="switchSolinftecTab('colhedoras')">Colhedoras</button>
+                    <button class="solinftec-tab" onclick="switchSolinftecTab('transbordos')">Transbordos</button>
+                </div>
+
+                <div id="solinftec-geral" class="solinftec-content active">
+                    <div class="group-cards-wrapper">
+                        <div class="card kpi-main">
+                            <div class="kpi-main-lbl">Produtivo (24h)</div>
+                            <div class="kpi-main-val" id="total-produtivo" style="color: #22c55e">0h</div>
+                        </div>
+                        <div class="card kpi-main">
+                            <div class="kpi-main-lbl">Improdutivo (24h)</div>
+                            <div class="kpi-main-val" id="total-improdutivo" style="color: #f59e0b">0h</div>
+                        </div>
+                        <div class="card kpi-main">
+                            <div class="kpi-main-lbl">Manutenção (24h)</div>
+                            <div class="kpi-main-val" id="total-manutencao" style="color: #ef4444">0h</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">📊 TOP 5 PIORES FRENTES (Gargalo Improdutivo)</div>
+                        <div id="piores-frentes"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">📋 Matriz de Performance da Frente</div>
+                        <div class="table-container">
+                            <table id="table-frentes">
+                                <thead>
+                                    <tr>
+                                        <th>Frente</th>
+                                        <th>Produtivo</th>
+                                        <th>Improdutivo</th>
+                                        <th>Manutenção</th>
+                                        <th>Gargalo Principal</th>
+                                        <th>Eficiência</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="solinftec-colhedoras" class="solinftec-content mini-dash-grid"></div>
+                <div id="solinftec-transbordos" class="solinftec-content mini-dash-grid"></div>
+            </div>
+

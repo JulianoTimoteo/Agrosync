@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgroSync | Análise de Dados</title>
+    <link rel="icon" type="image/png"
+        href="https://usinapitangueiras.com.br/wp-content/uploads/2020/10/cropped-favicon-180x180.png">
+    <link rel="apple-touch-icon"
+        href="https://usinapitangueiras.com.br/wp-content/uploads/2020/10/cropped-favicon-180x180.png">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap"
+        rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- Sincronização em tempo real entre computadores (Firebase Firestore) -->
+    <script src="https://cdn.jsdelivr.net/npm/firebase@10.14.1/firebase-app-compat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/firebase@10.14.1/firebase-auth-compat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/firebase@10.14.1/firebase-firestore-compat.js"></script>
+    <link rel="stylesheet" href="./core/core.css">
+
+</head>
+
+<body>
+    <!-- Fundo estrelado exibido apenas no modo escuro (ver CSS .bg-stars-layer) —
+         substitui o preto absoluto por um céu estrelado, atrás de todo o conteúdo. -->
+    <div class="bg-stars-layer" aria-hidden="true">
+        <div id="bgStars1"></div>
+        <div id="bgStars2"></div>
+        <div id="bgStars3"></div>
+    </div>
+    
+    <!-- Solinftec Components -->
+    <script src="./abas/solinftec/components/resumo-horas/resumo-horas.js"></script>
+    <script src="./abas/solinftec/components/piores-frentes/piores-frentes.js"></script>
+    <script src="./abas/solinftec/components/matriz-performance/matriz-performance.js"></script>
+        <!-- Intelligence Engine Architecture -->
+    <script src="./core/intelligence/data-model.js"></script>
+    <script src="./core/intelligence/entity-normalizer.js"></script>
+    <script src="./core/intelligence/metric-engine.js"></script>
+    <script src="./core/intelligence/baseline-engine.js"></script>
+    <script src="./core/intelligence/anomaly-engine.js"></script>
+    <script src="./core/intelligence/trend-engine.js"></script>
+    <script src="./core/intelligence/bottleneck-engine.js"></script>
+    <script src="./core/intelligence/correlation-engine.js"></script>
+    <script src="./core/intelligence/impact-engine.js"></script>
+    <script src="./core/intelligence/benchmark-engine.js"></script>
+    <script src="./core/intelligence/persistence-engine.js"></script>
+    <script src="./core/intelligence/evidence-engine.js"></script>
+    <script src="./core/intelligence/confidence-engine.js"></script>
+    <script src="./core/intelligence/insight-engine.js"></script>
+    <script src="./core/intelligence/deduplication-engine.js"></script>
+    <script src="./core/intelligence/validation-engine.js"></script>
+    <script src="./core/intelligence/insight-ui.js"></script>
+    <script src="./core/intelligence/tests.js"></script>
+    <script src="./core/intelligence/intelligence.js"></script>
+    <!-- Scripts Extracted to Core -->
+    <script src="./core/core.js"></script>
+
+    <div class="container">
+        <header class="header">
+            <div class="header-left">
+                <h1 class="top-menu-collapsible">AGROSYNC ANÁLISE DE DADOS</h1>
+                <div id="folderInfo" class="folder-info-inline top-menu-collapsible" style="display:none;">
+                    <span>📂 <span id="folderPath" class="folder-path"></span></span>
+                    <span id="fileStatus"></span>
+                </div>
+            </div>
+            <div class="btn-group top-menu-collapsible">
+                <span id="sync-status-badge" class="sync-badge sync-badge-conectando"
+                    title="Status da sincronização com os demais computadores">🟡 Conectando…</span>
+                <span id="auto-refresh-counter" class="sync-badge" style="display:none;cursor:pointer;"
+                    onclick="autoRefreshForcar()"></span>
+                <div class="theme-toggle-wrapper" title="Alternar tema claro/escuro">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="btn-theme-toggle" onchange="toggleTheme()"
+                            aria-label="Alternar tema claro/escuro">
+                        <span class="slider">
+                            <div class="clouds">
+                                <svg viewBox="0 0 100 100" class="cloud cloud1">
+                                    <path
+                                        d="M30,45 Q35,25 50,25 Q65,25 70,45 Q80,45 85,50 Q90,55 85,60 Q80,65 75,60 Q65,60 60,65 Q55,70 50,65 Q45,70 40,65 Q35,60 25,60 Q20,65 15,60 Q10,55 15,50 Q20,45 30,45">
+                                    </path>
+                                </svg>
+                                <svg viewBox="0 0 100 100" class="cloud cloud2">
+                                    <path
+                                        d="M30,45 Q35,25 50,25 Q65,25 70,45 Q80,45 85,50 Q90,55 85,60 Q80,65 75,60 Q65,60 60,65 Q55,70 50,65 Q45,70 40,65 Q35,60 25,60 Q20,65 15,60 Q10,55 15,50 Q20,45 30,45">
+                                    </path>
+                                </svg>
+                            </div>
+                        </span>
+                    </label>
+                </div>
+                <button class="btn-folder" onclick="selectFolder()">📁 SELECIONAR PASTA</button>
+                <button class="btn-screenshot" id="btn-screenshot" onclick="captureAndCopy()"
+                    title="Capturar tela e copiar para área de transferência (Ctrl+C / Ctrl+V no WhatsApp)">
+                    📸 CAPTURAR TELA
+                </button>
+                <button class="btn-screenshot" id="btn-export-pdf" onclick="exportarRelatorioPDF()"
+                    title="Exportar a aba atual em PDF (alta resolução)">
+                    📄 EXP. PDF
+                </button>
+            </div>
+            <button id="btn-menu-toggle" class="btn-menu-toggle" onclick="toggleTopMenu()"
+                title="Ocultar/mostrar menu e abas para dar mais espaço aos gráficos">⬆️</button>
+        </header>
+
+        <!-- Toast de feedback de captura -->
+        <div id="screenshot-toast">📋 Imagem copiada! Cole no WhatsApp com Ctrl+V</div>
+
+        <!-- Banner de carregamento automático -->
+        <div id="auto-load-banner" class="top-menu-collapsible" style="display:none; align-items:center; gap:12px; padding:14px 18px;
+         background:linear-gradient(135deg,#f0fdf4,#dcfce7); border:1px solid #86efac; border-radius:12px;
+         margin-bottom:18px; font-size:13px; font-weight:700; color:#15803d;">
+            <span style="font-size:20px;">📂</span>
+            <span id="auto-load-msg">Carregando última pasta…</span>
+            <div id="auto-load-spinner"
+                style="width:16px;height:16px;border:2px solid #86efac;border-top-color:#15803d;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;">
+            </div>
+            <button id="auto-load-dismiss" onclick="dismissAutoBanner()" style="margin-left:auto;padding:4px 12px;border-radius:6px;border:1px solid #86efac;background:#fff;
+                   font-size:11px;font-weight:700;cursor:pointer;color:#15803d;display:none;">✕ Fechar</button>
+        </div>
+
+
+
+        <div id="uploadPrompt" class="premium-upload-zone" onclick="selectFolder()">
+            <div class="premium-upload-icon-wrapper">
+                <div class="premium-upload-icon">
+                    <svg width="100" height="100" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 28C12 22.4772 16.4772 18 22 18H44.5C47.1522 18 49.6957 19.0536 51.5711 20.9289L56.4289 25.7868C58.3043 27.6621 60.8478 28.7157 63.5 28.7157H98C103.523 28.7157 108 33.1929 108 38.7157V94C108 99.5228 103.523 104 98 104H22C16.4772 104 12 99.5228 12 94V28Z" fill="url(#paint0_linear)"/>
+                        <rect x="22" y="32" width="76" height="40" rx="4" fill="white" opacity="0.95"/>
+                        <rect x="22" y="38" width="80" height="40" rx="4" fill="#f8fafc" opacity="0.95"/>
+                        <path d="M8.28666 52.8804C8.75051 46.5292 14.0533 41.5714 20.4199 41.5714H99.5801C105.947 41.5714 111.249 46.5292 111.713 52.8804L114.713 94.0232C115.341 102.639 108.528 110 99.8967 110H20.1033C11.4725 110 4.65876 102.639 5.28666 94.0232L8.28666 52.8804Z" fill="url(#paint1_linear)"/>
+                        <defs>
+                            <linearGradient id="paint0_linear" x1="60" y1="18" x2="60" y2="104" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#D9A05B"/>
+                                <stop offset="1" stop-color="#C28643"/>
+                            </linearGradient>
+                            <linearGradient id="paint1_linear" x1="60" y1="41.5714" x2="60" y2="110" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#EBC479"/>
+                                <stop offset="1" stop-color="#D09D52"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+            </div>
+            <h3 class="premium-upload-title">Selecione a Pasta com os Arquivos</h3>
+            <p class="premium-upload-sub">Clique em qualquer lugar aqui, ou use o botão <strong>Selecionar Pasta</strong> acima</p>
+            
+            <div class="premium-upload-cards">
+                <div class="premium-upload-card">
+                    <div class="card-icon excel-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="10" y="8" width="28" height="32" rx="4" fill="#F8FAFC" stroke="#16a34a" stroke-width="1.5"/>
+                            <rect x="4" y="14" width="20" height="20" rx="3" fill="#16a34a"/>
+                            <path d="M9 18L12.5 24L9 30H12L14 26L16 30H19L15.5 24L19 18H16L14 22L12 18H9Z" fill="white"/>
+                            <circle cx="34" cy="36" r="7" fill="#16a34a" stroke="white" stroke-width="1.5"/>
+                            <path d="M31.5 36.5L33.5 38.5L36.5 34.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <line x1="28" y1="16" x2="34" y2="16" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round"/>
+                            <line x1="28" y1="22" x2="34" y2="22" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round"/>
+                            <line x1="28" y1="28" x2="34" y2="28" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <div class="card-text">
+                        <strong>Producao.xlsx</strong>
+                        <span>Dados de Balança</span>
+                    </div>
+                </div>
+                <div class="premium-upload-card">
+                    <div class="card-icon gear-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="20" cy="24" r="8" stroke="#334155" stroke-width="2"/>
+                            <circle cx="20" cy="24" r="3" stroke="#334155" stroke-width="2"/>
+                            <path d="M20 12V16M20 32V36M12 24H16M24 24H28M14 18L17 21M23 27L26 30M14 30L17 27M23 21L26 18" stroke="#334155" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M30 16H36V12" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <circle cx="36" cy="12" r="2" fill="#334155"/>
+                            <path d="M30 24H38" stroke="#334155" stroke-width="2" stroke-linecap="round"/>
+                            <circle cx="38" cy="24" r="2" fill="#334155"/>
+                            <path d="M30 32H34V36" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <circle cx="34" cy="36" r="2" fill="#334155"/>
+                        </svg>
+                    </div>
+                    <div class="card-text">
+                        <strong>Solinftec.xlsx</strong>
+                        <span>Dados Operacionais</span>
+                    </div>
+                </div>
+            </div>
+
+            <p id="last-folder-hint" style="margin-top:20px;font-size:13px;color:#64748b;display:none;">
+                💡 Ou aguarde — tentando carregar a última pasta usada…
+            </p>
+
+            <button type="button" class="premium-spectator-btn" onclick="event.stopPropagation(); ativarModoEspectador();">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;">
+                    <path d="M12 5C5.636 5 2 12 2 12C2 12 5.636 19 12 19C18.364 19 22 12 22 12C22 12 18.364 5 12 5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Modo Espectador — ver dados de outro computador
+            </button>
+            <p class="premium-upload-footer">
+                Sem acesso à pasta local. Espelha todas as abas sincronizadas por quem carregou a pasta.
+            </p>
+        </div>
+        <!-- Painel de status do Modo Espectador — único jeito de saber se está
+             conectando, aguardando dados, ou se deu algum problema no meio do caminho -->
+        <div id="espectadorStatus" class="upload-zone hidden" style="text-align:center;">
+            <div id="espectadorStatusIcon" style="font-size:42px;margin-bottom:10px;">🔄</div>
+            <h3 id="espectadorStatusTitulo">Conectando…</h3>
+            <p id="espectadorStatusDetalhe" class="upload-zone-sub">Autenticando com o servidor de sincronização…</p>
+            <button type="button" class="btn-folder" style="margin-top:18px;"
+                onclick="espelhoCancelar()">
+                ✕ Cancelar e voltar
+            </button>
+        </div>
+
+        <div id="dashboardContent" class="hidden">
+            <div id="top-tabs-row" style="display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:25px;">
+                <div class="main-tabs" style="margin-bottom:0;">
+                    <button class="main-tab active" onclick="switchMainTab('solinftec')">📊 ANÁLISE SOLINFTEC<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'solinftec')"
+                            onmouseenter="showTabInfo(this,'solinftec')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('balance')">🚜 ANÁLISE BALANÇA<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'balance')"
+                            onmouseenter="showTabInfo(this,'balance')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('densidade')">📦 DENSIDADE DE CARGA<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'densidade')"
+                            onmouseenter="showTabInfo(this,'densidade')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('controle')">📈 CONTROLE DE CARGA<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'controle')"
+                            onmouseenter="showTabInfo(this,'controle')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('consumo')">⛽ CONSUMO<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'consumo')"
+                            onmouseenter="showTabInfo(this,'consumo')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('liberacao')">🔓 CONTROLE DE LIBERAÇÃO<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'liberacao')"
+                            onmouseenter="showTabInfo(this,'liberacao')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('lab')">🔬 LAB<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'lab')"
+                            onmouseenter="showTabInfo(this,'lab')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                    <button class="main-tab" onclick="switchMainTab('relproducao')">📄 REL. PRODUÇÃO<span
+                            class="tab-info-icon" onclick="event.stopPropagation(); toggleTabInfo(this,'relproducao')"
+                            onmouseenter="showTabInfo(this,'relproducao')" onmouseleave="hideTabInfo()">ℹ️</span></button>
+                </div>
+                <div id="tab-info-popover"></div>
+                <div class="balance-tabs" id="balance-tabs-header" style="display:none; margin-bottom:0;">
+                    <button class="balance-tab active" onclick="switchBalanceTab('colheita')">🚜 COLHEDORAS</button>
+                    <button class="balance-tab" onclick="switchBalanceTab('transporte')">🚛 TRANSPORTE
+                        CANAVIEIRO</button>
+                </div>
+            </div>
+
+            <div id="main-solinftec" class="main-tab-content active">
+                <div class="solinftec-tabs">
+                    <button class="solinftec-tab active" onclick="switchSolinftecTab('geral')">Geral</button>
+                    <button class="solinftec-tab" onclick="switchSolinftecTab('colhedoras')">Colhedoras</button>
+                    <button class="solinftec-tab" onclick="switchSolinftecTab('transbordos')">Transbordos</button>
+                </div>
+
+                <div id="solinftec-geral" class="solinftec-content active">
+                    <!-- AI INSIGHTS BLOCK -->
+                    <div class="card ai-card" style="border: 1px solid var(--color-brand); background: var(--bg-surface); padding: 16px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(0, 184, 115, 0.1);">
+                        <div class="section-title" style="color: var(--color-brand); display: flex; align-items: center; gap: 8px;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                            </svg>
+                            A.I. OPERACIONAL INSIGHTS
+                        </div>
+                        <div id="ai-insights-container" style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+                            <div style="color: var(--text-muted); font-size: 14px;">Analisando dados operacionais...</div>
+                        </div>
+                    </div>
+                    <div class="group-cards-wrapper">
+                        <div class="card kpi-main">
+                            <div class="kpi-main-lbl">Produtivo (24h)</div>
+                            <div class="kpi-main-val" id="total-produtivo" style="color: #22c55e">0h</div>
+                        </div>
+                        <div class="card kpi-main">
+                            <div class="kpi-main-lbl">Improdutivo (24h)</div>
+                            <div class="kpi-main-val" id="total-improdutivo" style="color: #f59e0b">0h</div>
+                        </div>
+                        <div class="card kpi-main">
+                            <div class="kpi-main-lbl">Manutenção (24h)</div>
+                            <div class="kpi-main-val" id="total-manutencao" style="color: #ef4444">0h</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">📊 TOP 5 PIORES FRENTES (Gargalo Improdutivo)</div>
+                        <div id="piores-frentes"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">📋 Matriz de Performance da Frente</div>
+                        <div class="table-container">
+                            <table id="table-frentes">
+                                <thead>
+                                    <tr>
+                                        <th>Frente</th>
+                                        <th>Produtivo</th>
+                                        <th>Improdutivo</th>
+                                        <th>Manutenção</th>
+                                        <th>Gargalo Principal</th>
+                                        <th>Eficiência</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="solinftec-colhedoras" class="solinftec-content mini-dash-grid"></div>
+                <div id="solinftec-transbordos" class="solinftec-content mini-dash-grid"></div>
+            </div>
+
+            <div id="main-balance" class="main-tab-content">
+                <div class="timeline-section" id="balance-timeline"></div>
+
+                <div id="balance-colheita" class="balance-content active">
+                    <div class="main-grid">
+                        <div class="balance-card">
+                            <div class="balance-card-title">Performance de Frentes</div>
+                            <div class="h-bar-container">
+                                <div>
+                                    <div class="h-bar-label"><span>Própria (80)</span><span id="txt-80">0 t</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-80" class="h-bar-fill"
+                                            style="width:0%; background-color: #40800c;">0%</div>
+                                    </div>
+                                    <div class="meta-info">Meta🟢: 58%</div>
+                                </div>
+                                <div>
+                                    <div class="h-bar-label"><span>Terceira (83/93)</span><span id="txt-83">0 t</span>
+                                    </div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-83" class="h-bar-fill"
+                                            style="width:0%; background-color: #e9a23b;">0%</div>
+                                    </div>
+                                    <div class="meta-info">META🟠: 42%</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="balance-card">
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                                <div class="balance-card-title" style="margin:0;">Acumulado</div>
+                                <div style="display:flex;align-items:center;gap:8px;">
+                                    <label for="input-meta-moagem-colheita" style="font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;">🎯 Meta Moagem</label>
+                                    <input id="input-meta-moagem-colheita" type="number" min="1" step="100" value="19500"
+                                        onchange="setMetaMoagemDiaria(this.value)"
+                                        style="width:100px;padding:6px 10px;border:2px solid #6366f1;border-radius:8px;font-weight:800;font-size:13px;color:#1e293b;text-align:right;">
+                                    <span style="font-size:11px;font-weight:800;color:#6366f1;">t</span>
+                                </div>
+                            </div>
+                            <div class="kpi-grid" style="margin-top:12px;">
+                                <div class="kpi-card"><small>Própria</small><span class="val" id="val-f80">0 t</span>
+                                </div>
+                                <div class="kpi-card terc"><small>Terceira</small><span class="val" id="val-f83">0
+                                        t</span></div>
+                                <div class="kpi-card"><small>Total Colhido</small><span
+                                        class="val" id="val-campo-total" style="font-size: 2rem; color:#16a34a;">0
+                                        t</span>
+                                    <div class="meta-info" id="val-campo-media3h">Média 3h cheias: —</div>
+                                </div>
+                                <div class="kpi-card" id="card-campo-projecao" style="background:#fef3c7; border-bottom-color:#f59e0b;">
+                                    <small>⏱️ PROJEÇÃO MOAGEM</small><span
+                                        class="val" id="val-campo-projecao" style="font-size: 2rem; color:#b45309;">0
+                                        t</span>
+                                    <div class="density-info" id="val-campo-projecao-info"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Gráfico entrada de cana por hora / frente -->
+                    <div class="balance-card" style="margin-top:20px;">
+                        <div class="balance-card-title" style="border-left-color:#6366f1;">
+                            📊 Entrada de Cana por Hora — Por Frente (06:00 → 05:59)
+                        </div>
+                        <!-- Filtros Própria / Terceira -->
+                        <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center;">
+                            <span
+                                style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:.5px;">Filtrar:</span>
+                            <button id="btn-frente-prop" onclick="toggleFrenteFilter('propria')"
+                                style="padding:6px 16px; border-radius:20px; border:2px solid #40800c; background:#fff;
+                                   color:#40800c; font-weight:800; font-size:12px; cursor:pointer; transition:all .2s;">
+                                🚜 Própria
+                            </button>
+                            <button id="btn-frente-terc" onclick="toggleFrenteFilter('terceira')"
+                                style="padding:6px 16px; border-radius:20px; border:2px solid #e9a23b; background:#fff;
+                                   color:#e9a23b; font-weight:800; font-size:12px; cursor:pointer; transition:all .2s;">
+                                🚛 Terceira
+                            </button>
+                            <span id="frente-filter-label"
+                                style="font-size:11px; color:#94a3b8; font-weight:600;"></span>
+                        </div>
+                        <div id="horaria-no-data"
+                            style="display:none; text-align:center; padding:40px; color:#94a3b8; font-weight:700; font-size:13px;">
+                            ⏳ Nenhum dado horário disponível para o período selecionado.
+                        </div>
+                        <div id="horaria-chart-wrap" style="position:relative; height:360px; margin-top:8px; overflow:hidden;">
+                            <canvas id="horaria-chart-canvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="balance-transporte" class="balance-content">
+                    <div class="main-grid">
+                        <div class="balance-card">
+                            <div class="balance-card-title">Transporte</div>
+                            <div class="h-bar-container">
+                                <div>
+                                    <div class="h-bar-label"><span>Próprio (31)</span><span id="txt-prop-bar">0 t</span>
+                                    </div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-prop-h" class="h-bar-fill"
+                                            style="width:0%; background-color: #40800c;">0%</div>
+                                    </div>
+                                    <div class="meta-info" id="prop-composicao">Meta🟢: 60%</div>
+                                </div>
+                                <div>
+                                    <div class="h-bar-label"><span>Terceiro (91)</span><span id="txt-terc-bar">0
+                                            t</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-terc-h" class="h-bar-fill"
+                                            style="width:0%; background-color: #e9a23b;">0%</div>
+                                    </div>
+                                    <div class="meta-info">Meta🟠: 40%</div>
+                                </div>
+                            </div>
+                            <!-- RODOTREM vs TREMINHÃO inline abaixo das barras -->
+                            <div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:14px;">
+                                <div
+                                    style="font-size:11px;font-weight:800;text-transform:uppercase;color:#0891b2;letter-spacing:.5px;margin-bottom:10px;">
+                                    🚛 Detalhamento Próprios: Rodotrem vs Treminhão</div>
+                                <div class="subtype-grid" id="subtype-grid-container">
+                                    <!-- Gerado dinamicamente por renderSubtipoCards(): 1 card por categoria
+                                         de "Tipo Carga" encontrada no relatório. Qualquer descrição nova
+                                         (ex.: uma 3ª ou 4ª variante) ganha seu próprio card automaticamente
+                                         e NUNCA é somada a outra categoria. -->
+                                </div>
+                                <div class="meta-info" style="margin-top: 10px; text-align: center;">
+                                    📌 Classificação pela coluna "Tipo Carga": RODOTREM, TREMINHÃO e ROMEU E JULIETA
+                                    são categorias distintas, cada uma com seu próprio card | Qualquer outra descrição = categoria própria
+                                </div>
+
+                                <!-- ⏱ Tempo de Permanência -->
+                                <div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:14px;">
+                                    <div
+                                        style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;letter-spacing:.5px;margin-bottom:2px;">
+                                        ⏱ Tempo de Permanência na Usina</div>
+                                    <div style="font-size:10px;color:#94a3b8;font-weight:600;margin-bottom:10px;">Ciclo:
+                                        Hora Entrada → Hora Saída por viagem. Clique para ver Top 10.</div>
+                                    <div class="perm-grid">
+                                        <div class="perm-card proprio" onclick="openPermanenciaModal('proprio')">
+                                            <div class="perm-card-icon">🟢</div>
+                                            <div class="perm-card-label">Próprio</div>
+                                            <div class="perm-card-avg" id="perm-avg-prop">—</div>
+                                            <div class="perm-card-sub" id="perm-sub-prop">— viagens</div>
+                                            <div class="perm-card-cta">🔍 Ver Top 10 mais longos →</div>
+                                        </div>
+                                        <div class="perm-card terceiro" onclick="openPermanenciaModal('terceiro')">
+                                            <div class="perm-card-icon">🟡</div>
+                                            <div class="perm-card-label">Terceiro</div>
+                                            <div class="perm-card-avg" id="perm-avg-terc">—</div>
+                                            <div class="perm-card-sub" id="perm-sub-terc">— viagens</div>
+                                            <div class="perm-card-cta">🔍 Ver Top 10 mais longos →</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <hr class="coa-separator" style="margin-top:16px;">
+
+                                <div
+                                    style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                    💡 Insights Automáticos</div>
+                                <div id="transp-insights" class="coa-insights-box"></div>
+                            </div>
+                        </div>
+                        <div class="balance-card">
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                                <div class="balance-card-title" style="margin:0;">Indicadores de Eficiência</div>
+                                <div style="display:flex;align-items:center;gap:8px;">
+                                    <label for="input-meta-moagem-transp" style="font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;">🎯 Meta Moagem</label>
+                                    <input id="input-meta-moagem-transp" type="number" min="1" step="100" value="19500"
+                                        onchange="setMetaMoagemDiaria(this.value)"
+                                        style="width:100px;padding:6px 10px;border:2px solid #6366f1;border-radius:8px;font-weight:800;font-size:13px;color:#1e293b;text-align:right;">
+                                    <span style="font-size:11px;font-weight:800;color:#6366f1;">t</span>
+                                </div>
+                            </div>
+                            <div class="kpi-grid" style="margin-top:12px;">
+                                <div class="kpi-card" id="prop-card">
+                                    <small>🚛 Próprio (Rodotrem + Treminhão)</small>
+                                    <span class="val" id="val-t-prop">0 t</span>
+                                    <div class="kpi-mini-row" style="margin-top: 10px; grid-template-columns: 1fr 1fr;">
+                                        <div><small>VIAGENS</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="cnt-v-prop">0</div>
+                                        </div>
+                                        <div><small>DENSIDADE</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="dens-prop">0,00</div>
+                                        </div>
+                                    </div>
+                                    <div class="density-info" id="dens-prop-info"></div>
+                                </div>
+                                <div class="kpi-card terc" id="terc-card">
+                                    <small>🚛 Terceiro</small>
+                                    <span class="val" id="val-t-terc">0 t</span>
+                                    <div class="kpi-mini-row" style="margin-top: 10px; grid-template-columns: 1fr 1fr;">
+                                        <div><small>VIAGENS</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="cnt-v-terc">0</div>
+                                        </div>
+                                        <div><small>DENSIDADE</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="dens-terc">0,00</div>
+                                        </div>
+                                    </div>
+                                    <div class="density-info" id="dens-terc-info"></div>
+                                </div>
+                                <!-- Acumulado total transportado -->
+                                <div class="kpi-card" id="card-transp-acumulado"
+                                    style="background:var(--color-success-bg); border-bottom-color:var(--color-success);">
+                                    <small>📦 ACUMULADO TOTAL TRANSPORTADO (Próprio + Terceiro)</small>
+                                    <span class="val" id="val-transp-total" style="font-size:2rem; color:var(--color-success-text);">0
+                                        t</span>
+                                    <div class="meta-info" id="val-transp-media3h">Média 3h cheias: —</div>
+                                </div>
+                                <div class="kpi-card" id="card-transp-projecao" style="background:var(--color-warning-bg); border-bottom-color:var(--color-warning);">
+                                    <small>⏱️ PROJEÇÃO MOAGEM</small>
+                                    <span class="val" id="val-transp-projecao" style="font-size:2rem; color:var(--color-warning-text);">0
+                                        t</span>
+                                    <div class="density-info" id="val-transp-projecao-info"></div>
+                                </div>
+                                <div class="kpi-card" style="grid-column: span 2;"><small>Raio Médio
+                                        Próprio</small><span class="val" id="raio-prop">0,00</span></div>
+                                <div class="kpi-card terc" style="grid-column: span 2;"><small>Raio Médio
+                                        Terceiro</small><span class="val" id="raio-terc">0,00</span></div>
+                                <div class="kpi-card" id="dens-media-card"
+                                    style="grid-column: span 2;">
+                                    <small>📊 MÉDIA GERAL POR VIAGEM REAL</small>
+                                    <span class="val" id="dens-media-geral" style="font-size: 1.8rem;">0,00</span>
+                                    <div class="warning-info" id="dens-media-info"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ===== ABA DENSIDADE DE CARGA ===== -->
+            <div id="main-densidade" class="main-tab-content">
+                <div class="timeline-section" id="dens-timeline"></div>
+                <div id="dens-content"></div>
+            </div>
+            <!-- ===== ABA CONTROLE DE CARGA ===== -->
+            <div id="main-controle" class="main-tab-content">
+                <div class="timeline-section" id="controle-timeline"></div>
+                <div id="controle-content"></div>
+            </div>
+
+            <!-- ===== ABA CONSUMO ===== -->
+            <div id="main-consumo" class="main-tab-content">
+
+                <div class="consumo-tabs-row">
+                    <div class="consumo-tabs">
+                        <button class="consumo-tab active" id="consumo-tab-caminhao"
+                            onclick="switchConsumoTab('caminhao')">🚛 Caminhão</button>
+                        <button class="consumo-tab" id="consumo-tab-colhedoras"
+                            onclick="switchConsumoTab('colhedoras')">🌾 Colhedoras</button>
+                        <button class="consumo-tab" id="consumo-tab-tpl"
+                            onclick="switchConsumoTab('tpl')">🚜 Consumo TPL</button>
+                    </div>
+                    <div id="consumo-grupo-chips" class="consumo-chips"></div>
+                    <button class="day-badge" id="consumo-btn-safra" onclick="consumoToggleSafra()"
+                        style="margin-left:auto;white-space:nowrap;">📅 SAFRA COMPLETA</button>
+                    <span id="consumo-periodo-badge" class="consumo-periodo-badge" style="display:none;"></span>
+                </div>
+                <div id="consumo-safra-info" style="display:none;" class="consumo-msg-info"></div>
+
+                <div id="consumo-files-status"></div>
+
+                <div id="consumo-caminhao" class="consumo-content active">
+                    <div id="consumo-caminhao-msg"></div>
+                    <div id="consumo-caminhao-toolbar"></div>
+                    <div id="consumo-caminhao-cards"></div>
+                    <div id="consumo-caminhao-grupos"></div>
+                    <div id="consumo-caminhao-tabela"></div>
+                </div>
+
+                <div id="consumo-colhedoras" class="consumo-content">
+                    <div id="consumo-colhedoras-msg"></div>
+                    <div id="consumo-colhedoras-toolbar"></div>
+                    <div id="consumo-colhedoras-cards"></div>
+                    <div id="consumo-colhedoras-grupos"></div>
+                    <div id="consumo-colhedoras-tabela"></div>
+                </div>
+
+                <div id="consumo-tpl" class="consumo-content">
+                    <div id="consumo-tpl-msg"></div>
+                    <div id="consumo-tpl-toolbar"></div>
+                    <div id="consumo-tpl-cards"></div>
+                    <div id="consumo-tpl-grupos"></div>
+                    <div id="consumo-tpl-tabela"></div>
+                </div>
+
+            </div>
+
+            <div id="main-liberacao" class="main-tab-content">
+                <div class="consumo-tabs-row">
+                    <div class="consumo-tabs">
+                        <button class="consumo-tab active" id="liberacao-subtab-ativos"
+                            onclick="switchLiberacaoSubTab('ativos')">🔓 Ativos</button>
+                        <button class="consumo-tab" id="liberacao-subtab-historico"
+                            onclick="switchLiberacaoSubTab('historico')">📜 Histórico</button>
+                    </div>
+                </div>
+
+                <div id="liberacao-painel-ativos">
+                    <div class="balance-card">
+                        <div class="balance-card-title">🔓 Controle de Liberação por Fazenda / Frente</div>
+                        <div class="liberacao-toolbar">
+                            <div class="liberacao-resumo" id="liberacao-resumo"></div>
+                        </div>
+                        <div id="liberacao-msg"></div>
+                        <div class="table-container">
+                            <table id="liberacao-table">
+                                <thead>
+                                    <tr>
+                                        <th>Cod.Fazenda</th>
+                                        <th>Desc.Fazenda</th>
+                                        <th>Liberação</th>
+                                        <th>Cod. Frente</th>
+                                        <th>Cana Processada</th>
+                                        <th>Controle</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liberacao-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="liberacao-painel-historico" style="display:none;">
+                    <div class="balance-card">
+                        <div class="balance-card-title">📜 Histórico de Liberações Encerradas</div>
+                        <div id="liberacao-historico-msg"></div>
+                        <div class="table-container">
+                            <table id="liberacao-historico-table">
+                                <thead>
+                                    <tr>
+                                        <th>Cod.Fazenda</th>
+                                        <th>Desc.Fazenda</th>
+                                        <th>Liberação</th>
+                                        <th>Cod. Frente</th>
+                                        <th>Meta</th>
+                                        <th>Acumulado Final</th>
+                                        <th>Ativado em</th>
+                                        <th>Encerrado em</th>
+                                        <th>Motivo</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liberacao-historico-tbody"></tbody>
+                            </table>
+                        </div>
+                        <div class="liberacao-paginacao" id="liberacao-historico-paginacao"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== ABA LAB ===== -->
+            <div id="main-lab" class="main-tab-content">
+                <div class="timeline-section" id="lab-timeline"></div>
+
+                <!-- ===== ANÁLISE COA (movido da aba Análise Balança) ===== -->
+                <div class="balance-card">
+                    <div class="balance-card-title" style="border-left-color: #7c3aed;">🔬 ANÁLISE COA — Percentual
+                        de Análise por Carga</div>
+                    <div class="coa-grid">
+
+                        <!-- Coluna esquerda: transporte + stats -->
+                        <div>
+                            <!-- Cobertura de análise COA por grupo de frente -->
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Cobertura de Análise por Grupo de Frente</div>
+                            <div class="h-bar-container">
+                                <div>
+                                    <div class="h-bar-label"><span>🟢 Própria (F08,10,11,12,13,14,15)</span><span
+                                            id="coa-txt-prop">0%</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="coa-bar-prop" class="h-bar-fill"
+                                            style="width:0%;background:#40800c;">0%</div>
+                                    </div>
+                                    <div class="meta-info" id="coa-prop-composicao">— cargas analisadas</div>
+                                </div>
+                                <div style="margin-top:12px;">
+                                    <div class="h-bar-label"><span>🟠 Terceira (F23,30,33,34,35,38,39)</span><span
+                                            id="coa-txt-terc">0%</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="coa-bar-terc" class="h-bar-fill"
+                                            style="width:0%;background:#e9a23b;">0%</div>
+                                    </div>
+                                    <div class="meta-info" id="coa-terc-composicao">— cargas analisadas</div>
+                                </div>
+                            </div>
+                            <div id="coa-grupo-destaque"
+                                style="font-size:11px;text-align:center;font-weight:700;color:#475569;margin-top:10px;padding:8px;background:#f8fafc;border-radius:8px;">
+                            </div>
+                            <div
+                                style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                📌 Meta mínima por grupo: 30% das cargas analisadas
+                            </div>
+                            <div id="coa-outras-frentes-nota"
+                                style="font-size:10px;text-align:center;color:#94a3b8;margin-top:4px;font-weight:600;font-style:italic;">
+                            </div>
+
+                            <hr class="coa-separator">
+
+                            <!-- Contagem de cargas -->
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Contagem de Cargas Únicas</div>
+                            <div class="coa-stats-row">
+                                <div class="coa-stat" style="background:#f8fafc;">
+                                    <span class="coa-stat-val" id="coa-total">—</span>
+                                    <span class="coa-stat-lbl">Total</span>
+                                </div>
+                                <div class="coa-stat" style="background:#dcfce7;">
+                                    <span class="coa-stat-val" style="color:#15803d;" id="coa-sim">—</span>
+                                    <span class="coa-stat-lbl">✅ SIM</span>
+                                </div>
+                                <div class="coa-stat" style="background:#fee2e2;">
+                                    <span class="coa-stat-val" style="color:#b91c1c;" id="coa-nao">—</span>
+                                    <span class="coa-stat-lbl">❌ NÃO</span>
+                                </div>
+                            </div>
+
+                            <div id="coa-status-badge" class="coa-meta-badge coa-meta-ruim"
+                                style="margin-top:12px;">
+                                Aguardando dados…
+                            </div>
+                        </div>
+
+                        <!-- Coluna direita: donut / corrida (flip no duplo clique) -->
+                        <div>
+                            <div id="coa-flip-title"
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Percentual Analisado</div>
+
+                            <div id="coa-flip-container" class="coa-flip-container" ondblclick="toggleCoaFlip()">
+                                <!-- Vista 1: donut SIM/NÃO -->
+                                <div id="coa-view-donut">
+                                    <div class="coa-chart-wrap">
+                                        <canvas id="coa-donut-canvas"></canvas>
+                                        <div class="coa-center-text">
+                                            <div class="coa-pct-value" id="coa-pct-center">—</div>
+                                            <div class="coa-pct-label">Analisado</div>
+                                        </div>
+                                    </div>
+                                    <div class="coa-legend">
+                                        <div class="coa-legend-item">
+                                            <div class="coa-legend-dot" id="coa-dot-sim" style="background:#22c55e;"></div>
+                                            <span id="coa-legend-sim">SIM</span>
+                                        </div>
+                                        <div class="coa-legend-item">
+                                            <div class="coa-legend-dot" style="background:#94a3b8;"></div>
+                                            <span id="coa-legend-nao">NÃO</span>
+                                        </div>
+                                    </div>
+                                    <div
+                                        style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                        📌 Meta mínima: 30% analisado | Abaixo = ⚠️ Ruim
+                                    </div>
+                                </div>
+
+                                <!-- Vista 2: corrida % análise por frente (08 → 39) -->
+                                <div id="coa-view-race" style="display:none;">
+                                    <div class="coa-race-wrap">
+                                        <canvas id="coa-frente-race-canvas"></canvas>
+                                    </div>
+                                    <div
+                                        style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                        📌 Ordenado por frente | 🟢 ≥ 30% · 🔴 &lt; 30%
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="coa-flip-hint">🔄 Duplo clique para alternar o gráfico</div>
+
+                            <div id="lab-coa-insights" class="coa-insights-box" style="margin-top:14px;"></div>
+                        </div>
+
+                    </div>
+                </div>
+                <!-- ===== FIM ANÁLISE COA ===== -->
+
+                <!-- ===== CARGAS POR HORA / TURNO ===== -->
+                <div class="balance-card" style="margin-top: 20px;">
+                    <div class="balance-card-title" style="border-left-color: #0891b2;">🕐 Cargas por Hora e Turno —
+                        Análise COA</div>
+
+                    <div class="lab-kpi-row">
+                        <div class="lab-kpi" style="background:#f8fafc;">
+                            <span class="lab-kpi-val" id="lab-total-cargas">—</span>
+                            <span class="lab-kpi-lbl">Total de Cargas</span>
+                        </div>
+                        <div class="lab-kpi" style="background:#dcfce7;">
+                            <span class="lab-kpi-val" style="color:#15803d;" id="lab-total-analisadas">—</span>
+                            <span class="lab-kpi-lbl">Cargas Analisadas</span>
+                        </div>
+                        <div class="lab-kpi" style="background:#e0f2fe;">
+                            <span class="lab-kpi-val" style="color:#0369a1;" id="lab-total-pct">—</span>
+                            <span class="lab-kpi-lbl">% Analisado</span>
+                        </div>
+                    </div>
+
+                    <div class="lab-grid">
+                        <!-- Coluna esquerda: tabela Turno/Hora -->
+                        <div>
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                Cargas e Análise por Turno / Hora</div>
+                            <div class="table-container">
+                                <table class="top10-table lab-hora-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Turno</th>
+                                            <th>Hora</th>
+                                            <th>Cargas</th>
+                                            <th>Analisado</th>
+                                            <th>%</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lab-hora-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Coluna direita: mini tabela por turno + gráfico -->
+                        <div>
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                % Analisado por Turno</div>
+                            <div class="table-container">
+                                <table class="top10-table lab-turno-mini-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Turno</th>
+                                            <th>Cargas</th>
+                                            <th>Analisado</th>
+                                            <th>%</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lab-turno-tbody"></tbody>
+                                </table>
+                            </div>
+
+                            <div
+                                style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin:16px 0 10px;letter-spacing:.5px;">
+                                Cargas Totais × Analisadas por Hora</div>
+                            <div class="lab-chart-wrap">
+                                <canvas id="lab-hora-chart-canvas"></canvas>
+                            </div>
+                            <div
+                                style="font-size:10px;text-align:center;color:#94a3b8;margin-top:8px;font-weight:600;">
+                                📌 Turno A: 08h–15h · Turno B: 16h–23h · Turno C: 00h–07h
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- ===== FIM CARGAS POR HORA / TURNO ===== -->
+            </div>
+
+            <!-- ===== ABA REL. PRODUÇÃO ===== -->
+            <div id="main-relproducao" class="main-tab-content">
+                <div id="relproducao-no-data" style="text-align:center;padding:60px;color:#94a3b8;font-weight:700;font-size:14px;">
+                    ⏳ Carregue Producao.xlsx + METAS.xlsx + Potencial.xlsx para montar o relatório.
+                </div>
+                <div id="relproducao-content" style="display:none;">
+
+                    <!-- Cards principais: Realizado / Projeção / Meta -->
+                    <div class="kpi-grid" style="margin-bottom:16px; grid-template-columns:1fr 1fr 1fr;">
+                        <div class="kpi-card" id="rp-card-realizado" style="background:var(--color-bg-surface);">
+                            <small>✅ REALIZADO</small>
+                            <span class="val" id="rp-val-realizado" style="font-size:2rem; color:var(--color-text-primary);">0 t</span>
+                        </div>
+                        <div class="kpi-card" id="rp-card-projecao" style="background:var(--color-warning-bg); border-bottom-color:var(--color-warning);">
+                            <small>⏱️ PROJEÇÃO DE MOAGEM</small>
+                            <span class="val" id="rp-val-projecao" style="font-size:2rem; color:var(--color-warning-text);">0 t</span>
+                        </div>
+                        <div class="kpi-card" id="rp-card-meta" style="background:var(--color-success-bg); border-bottom-color:var(--color-success);">
+                            <small>🎯 META DE MOAGEM</small>
+                            <span class="val" id="rp-val-meta" style="font-size:2rem; color:var(--color-success-text);">0 t</span>
+                        </div>
+                    </div>
+
+                    <!-- Donut: Cana Própria × Fornecedor (coluna "Tipo Proprietario (F.A.)" do Producao.xlsx) -->
+                    <div class="balance-card" style="margin-bottom:16px;">
+                        <div class="balance-card-title">🥧 Entrada de Cana — Própria × Fornecedor</div>
+                        <div class="rp-donut-grid">
+                            <div>
+                                <div class="coa-chart-wrap" style="height:200px;">
+                                    <canvas id="rp-propterc-donut-canvas"></canvas>
+                                    <div class="coa-center-text">
+                                        <div class="coa-pct-value" id="rp-propterc-pct-center">—</div>
+                                        <div class="coa-pct-label">Própria</div>
+                                    </div>
+                                </div>
+                                <div class="coa-legend">
+                                    <div class="coa-legend-item">
+                                        <div class="coa-legend-dot" style="background:#40800c;"></div>
+                                        <span id="rp-propterc-legend-prop">Própria</span>
+                                    </div>
+                                    <div class="coa-legend-item">
+                                        <div class="coa-legend-dot" style="background:#e9a23b;"></div>
+                                        <span id="rp-propterc-legend-terc">Fornecedor</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rp-donut-stats">
+                                <div class="coa-stat" style="background:var(--color-primary-soft);">
+                                    <span class="coa-stat-val" style="color:var(--color-primary);" id="rp-propterc-total-prop">—</span>
+                                    <span class="coa-stat-lbl">Total Própria</span>
+                                </div>
+                                <div class="coa-stat" style="background:var(--color-secondary-soft);">
+                                    <span class="coa-stat-val" style="color:var(--color-secondary);" id="rp-propterc-total-terc">—</span>
+                                    <span class="coa-stat-lbl">Total Fornecedor</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Status de caminhões / RPM (último snapshot do Potencial.xlsx) + Análise COA -->
+                    <div class="balance-card" id="rp-status-wrap">
+                        <div class="balance-card-title">🚛 Status de Caminhões · Potencial.xlsx <span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;"></span></div>
+                        <div class="rp-status-grid" id="rp-status-grid" style="margin-top:10px;"></div>
+                    </div>
+
+                    <!-- Tabela grande por Frente -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📋 Frentes · Meta × Planejado × Realizado</div>
+                        <div class="table-container" style="margin-top:10px;">
+                            <table class="top10-table" id="rp-tabela-frentes" style="font-size:12px;">
+                                <thead><tr>
+                                    <th>Frente</th><th>F.Agr</th><th>Raio Médio</th><th>Meta 24h</th><th>Meta Hora</th>
+                                    <th>Planejado</th><th>Realizado</th><th>Diferença</th><th>Densidade</th>
+                                    <th>Viagens</th><th>Análise%</th><th>Projeção dia</th><th>Saldo 24H</th>
+                                </tr></thead>
+                                <tbody id="rp-tabela-frentes-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Produção Canavieiro + Raio Médio + Top rankings -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;margin-top:16px;" class="rp-grid-4">
+                        <div class="balance-card" style="display:flex;flex-direction:column;">
+                            <div class="balance-card-title">📊 Produção Canavieiro</div>
+                            <div style="flex:1;min-height:200px;position:relative;"><canvas id="rp-canvieiro-canvas"></canvas></div>
+                        </div>
+                        <div class="balance-card" style="display:flex;flex-direction:column;">
+                            <div class="balance-card-title">📊 Raio Médio</div>
+                            <div style="flex:1;min-height:200px;position:relative;"><canvas id="rp-raiomedio-canvas"></canvas></div>
+                        </div>
+                        <div class="balance-card">
+                            <div class="balance-card-title">🚛 Top Caminhões</div>
+                            <div class="table-container" style="margin-top:10px;"><table class="top10-table" id="rp-top-caminhoes"><tbody></tbody></table></div>
+                        </div>
+                        <div class="balance-card">
+                            <div class="balance-card-title">🚜 Top Colhedoras</div>
+                            <div class="table-container" style="margin-top:10px;"><table class="top10-table" id="rp-top-colhedoras"><tbody></tbody></table></div>
+                        </div>
+                    </div>
+
+                    <!-- Detalhe por Frente/Descrição/Densidade -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📦 Frente · Tipo de Veículo · Líquido · Densidade · Viagens</div>
+                        <div class="table-container" style="margin-top:10px;">
+                            <table class="top10-table" id="rp-tabela-detalhe" style="font-size:12px;">
+                                <thead><tr><th>Frente</th><th>Tipo</th><th>Líquido</th><th>Densidade</th><th>Viagens</th></tr></thead>
+                                <tbody id="rp-tabela-detalhe-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Gráficos horários -->
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">📊 Moagem Hora (Toneladas)</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <span id="rp-meta-moagem-hora-display" style="width:90px;padding:6px 8px;font-size:13px;font-weight:800;text-align:right;display:inline-block;color:var(--color-text-primary);">—</span>
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-moagem-hora-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">🌾 Potencial de Colheita</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <input id="rp-meta-potencial" type="number" min="0" step="1" oninput="rpAtualizarMeta('potencial', this.value)">
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-potencial-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="rp-chart-header">
+                            <div class="balance-card-title" style="margin:0;">⚙️ Rotação da Moenda (RPM)</div>
+                            <div class="consumo-meta-box"><label>🎯 Meta</label>
+                                <input id="rp-meta-rpm" type="number" min="0" step="0.1" oninput="rpAtualizarMeta('rpm', this.value)">
+                            </div>
+                        </div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-rpm-canvas"></canvas></div>
+                    </div>
+                    <div class="balance-card" style="margin-top:16px;">
+                        <div class="balance-card-title">📈 Disponibilidade — Transbordo / Colhedora / Caminhão</div>
+                        <div style="height:260px;margin-top:10px;"><canvas id="rp-disp-canvas"></canvas></div>
+                    </div>
+
+                </div>
+            </div>
+            <!-- ===== FIM ABA REL. PRODUÇÃO ===== -->
+
+        </div><!-- /#dashboardContent -->
+
+        <div id="statusMsg"></div>
+    </div>
+
+    <div id="detail-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Detalhes da Frente</h3><button class="modal-close"
+                    onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <div id="liberacao-input-modal" class="modal">
+        <div class="modal-content" style="max-width:420px;">
+            <div class="modal-header">
+                <h3 id="liberacao-input-title">Definir meta de controle</h3>
+                <button class="modal-close" onclick="closeLiberacaoInputModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="liberacao-input-desc" style="margin:0 0 14px;font-size:13px;color:#475569;white-space:pre-line;"></p>
+                <input type="number" id="liberacao-input-valor" min="0" step="0.001" inputmode="decimal"
+                    onkeydown="liberacaoInputKeydown(event)"
+                    style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px;box-sizing:border-box;"
+                    placeholder="Quantidade em toneladas">
+                <div id="liberacao-input-erro" style="color:#dc2626;font-size:12px;margin-top:8px;display:none;"></div>
+                <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;">
+                    <button class="liberacao-btn inativo" onclick="closeLiberacaoInputModal()">Cancelar</button>
+                    <button class="liberacao-btn ativo" onclick="confirmLiberacaoInputModal()">Salvar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="liberacao-confirm-modal" class="modal">
+        <div class="modal-content" style="max-width:440px;">
+            <div class="modal-header">
+                <h3>Controle de Liberação</h3>
+                <button class="modal-close" onclick="liberacaoConfirmResposta(null)">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="liberacao-confirm-msg" style="margin:0;font-size:13px;color:#1e293b;white-space:pre-line;"></p>
+                <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;">
+                    <button id="liberacao-confirm-btn-no" class="liberacao-btn inativo"
+                        onclick="liberacaoConfirmResposta(false)">Não</button>
+                    <button id="liberacao-confirm-btn-yes" class="liberacao-btn ativo"
+                        onclick="liberacaoConfirmResposta(true)">Sim</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    
+    
+
+</body>
+
+</html>

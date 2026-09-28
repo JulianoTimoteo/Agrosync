@@ -1,0 +1,46 @@
+            <div id="main-consumo" class="main-tab-content">
+
+                <div class="consumo-tabs-row">
+                    <div class="consumo-tabs">
+                        <button class="consumo-tab active" id="consumo-tab-caminhao"
+                            onclick="switchConsumoTab('caminhao')">🚛 Caminhão</button>
+                        <button class="consumo-tab" id="consumo-tab-colhedoras"
+                            onclick="switchConsumoTab('colhedoras')">🌾 Colhedoras</button>
+                        <button class="consumo-tab" id="consumo-tab-tpl"
+                            onclick="switchConsumoTab('tpl')">🚜 Consumo TPL</button>
+                    </div>
+                    <div id="consumo-grupo-chips" class="consumo-chips"></div>
+                    <button class="day-badge" id="consumo-btn-safra" onclick="consumoToggleSafra()"
+                        style="margin-left:auto;white-space:nowrap;">📅 SAFRA COMPLETA</button>
+                    <span id="consumo-periodo-badge" class="consumo-periodo-badge" style="display:none;"></span>
+                </div>
+                <div id="consumo-safra-info" style="display:none;" class="consumo-msg-info"></div>
+
+                <div id="consumo-files-status"></div>
+
+                <div id="consumo-caminhao" class="consumo-content active">
+                    <div id="consumo-caminhao-msg"></div>
+                    <div id="consumo-caminhao-toolbar"></div>
+                    <div id="consumo-caminhao-cards"></div>
+                    <div id="consumo-caminhao-grupos"></div>
+                    <div id="consumo-caminhao-tabela"></div>
+                </div>
+
+                <div id="consumo-colhedoras" class="consumo-content">
+                    <div id="consumo-colhedoras-msg"></div>
+                    <div id="consumo-colhedoras-toolbar"></div>
+                    <div id="consumo-colhedoras-cards"></div>
+                    <div id="consumo-colhedoras-grupos"></div>
+                    <div id="consumo-colhedoras-tabela"></div>
+                </div>
+
+                <div id="consumo-tpl" class="consumo-content">
+                    <div id="consumo-tpl-msg"></div>
+                    <div id="consumo-tpl-toolbar"></div>
+                    <div id="consumo-tpl-cards"></div>
+                    <div id="consumo-tpl-grupos"></div>
+                    <div id="consumo-tpl-tabela"></div>
+                </div>
+
+            </div>
+

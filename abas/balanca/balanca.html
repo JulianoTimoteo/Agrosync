@@ -1,0 +1,233 @@
+            <div id="main-balance" class="main-tab-content">
+                <div class="timeline-section" id="balance-timeline"></div>
+
+                <div id="balance-colheita" class="balance-content active">
+                    <div class="main-grid">
+                        <div class="balance-card">
+                            <div class="balance-card-title">Performance de Frentes</div>
+                            <div class="h-bar-container">
+                                <div>
+                                    <div class="h-bar-label"><span>Própria (80)</span><span id="txt-80">0 t</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-80" class="h-bar-fill"
+                                            style="width:0%; background-color: #40800c;">0%</div>
+                                    </div>
+                                    <div class="meta-info">Meta🟢: 58%</div>
+                                </div>
+                                <div>
+                                    <div class="h-bar-label"><span>Terceira (83/93)</span><span id="txt-83">0 t</span>
+                                    </div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-83" class="h-bar-fill"
+                                            style="width:0%; background-color: #e9a23b;">0%</div>
+                                    </div>
+                                    <div class="meta-info">META🟠: 42%</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="balance-card">
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                                <div class="balance-card-title" style="margin:0;">Acumulado</div>
+                                <div style="display:flex;align-items:center;gap:8px;">
+                                    <label for="input-meta-moagem-colheita" style="font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;">🎯 Meta Moagem</label>
+                                    <input id="input-meta-moagem-colheita" type="number" min="1" step="100" value="19500"
+                                        onchange="setMetaMoagemDiaria(this.value)"
+                                        style="width:100px;padding:6px 10px;border:2px solid #6366f1;border-radius:8px;font-weight:800;font-size:13px;color:#1e293b;text-align:right;">
+                                    <span style="font-size:11px;font-weight:800;color:#6366f1;">t</span>
+                                </div>
+                            </div>
+                            <div class="kpi-grid" style="margin-top:12px;">
+                                <div class="kpi-card"><small>Própria</small><span class="val" id="val-f80">0 t</span>
+                                </div>
+                                <div class="kpi-card terc"><small>Terceira</small><span class="val" id="val-f83">0
+                                        t</span></div>
+                                <div class="kpi-card"><small>Total Colhido</small><span
+                                        class="val" id="val-campo-total" style="font-size: 2rem; color:#16a34a;">0
+                                        t</span>
+                                    <div class="meta-info" id="val-campo-media3h">Média 3h cheias: —</div>
+                                </div>
+                                <div class="kpi-card" id="card-campo-projecao" style="background:#fef3c7; border-bottom-color:#f59e0b;">
+                                    <small>⏱️ PROJEÇÃO MOAGEM</small><span
+                                        class="val" id="val-campo-projecao" style="font-size: 2rem; color:#b45309;">0
+                                        t</span>
+                                    <div class="density-info" id="val-campo-projecao-info"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Gráfico entrada de cana por hora / frente -->
+                    <div class="balance-card" style="margin-top:20px;">
+                        <div class="balance-card-title" style="border-left-color:#6366f1;">
+                            📊 Entrada de Cana por Hora — Por Frente (06:00 → 05:59)
+                        </div>
+                        <!-- Filtros Própria / Terceira -->
+                        <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center;">
+                            <span
+                                style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:.5px;">Filtrar:</span>
+                            <button id="btn-frente-prop" onclick="toggleFrenteFilter('propria')"
+                                style="padding:6px 16px; border-radius:20px; border:2px solid #40800c; background:#fff;
+                                   color:#40800c; font-weight:800; font-size:12px; cursor:pointer; transition:all .2s;">
+                                🚜 Própria
+                            </button>
+                            <button id="btn-frente-terc" onclick="toggleFrenteFilter('terceira')"
+                                style="padding:6px 16px; border-radius:20px; border:2px solid #e9a23b; background:#fff;
+                                   color:#e9a23b; font-weight:800; font-size:12px; cursor:pointer; transition:all .2s;">
+                                🚛 Terceira
+                            </button>
+                            <span id="frente-filter-label"
+                                style="font-size:11px; color:#94a3b8; font-weight:600;"></span>
+                        </div>
+                        <div id="horaria-no-data"
+                            style="display:none; text-align:center; padding:40px; color:#94a3b8; font-weight:700; font-size:13px;">
+                            ⏳ Nenhum dado horário disponível para o período selecionado.
+                        </div>
+                        <div id="horaria-chart-wrap" style="position:relative; height:360px; margin-top:8px; overflow:hidden;">
+                            <canvas id="horaria-chart-canvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="balance-transporte" class="balance-content">
+                    <div class="main-grid">
+                        <div class="balance-card">
+                            <div class="balance-card-title">Transporte</div>
+                            <div class="h-bar-container">
+                                <div>
+                                    <div class="h-bar-label"><span>Próprio (31)</span><span id="txt-prop-bar">0 t</span>
+                                    </div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-prop-h" class="h-bar-fill"
+                                            style="width:0%; background-color: #40800c;">0%</div>
+                                    </div>
+                                    <div class="meta-info" id="prop-composicao">Meta🟢: 60%</div>
+                                </div>
+                                <div>
+                                    <div class="h-bar-label"><span>Terceiro (91)</span><span id="txt-terc-bar">0
+                                            t</span></div>
+                                    <div class="h-bar-bg">
+                                        <div id="bar-terc-h" class="h-bar-fill"
+                                            style="width:0%; background-color: #e9a23b;">0%</div>
+                                    </div>
+                                    <div class="meta-info">Meta🟠: 40%</div>
+                                </div>
+                            </div>
+                            <!-- RODOTREM vs TREMINHÃO inline abaixo das barras -->
+                            <div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:14px;">
+                                <div
+                                    style="font-size:11px;font-weight:800;text-transform:uppercase;color:#0891b2;letter-spacing:.5px;margin-bottom:10px;">
+                                    🚛 Detalhamento Próprios: Rodotrem vs Treminhão</div>
+                                <div class="subtype-grid" id="subtype-grid-container">
+                                    <!-- Gerado dinamicamente por renderSubtipoCards(): 1 card por categoria
+                                         de "Tipo Carga" encontrada no relatório. Qualquer descrição nova
+                                         (ex.: uma 3ª ou 4ª variante) ganha seu próprio card automaticamente
+                                         e NUNCA é somada a outra categoria. -->
+                                </div>
+                                <div class="meta-info" style="margin-top: 10px; text-align: center;">
+                                    📌 Classificação pela coluna "Tipo Carga": RODOTREM, TREMINHÃO e ROMEU E JULIETA
+                                    são categorias distintas, cada uma com seu próprio card | Qualquer outra descrição = categoria própria
+                                </div>
+
+                                <!-- ⏱ Tempo de Permanência -->
+                                <div style="border-top:1px solid #e2e8f0; margin-top:16px; padding-top:14px;">
+                                    <div
+                                        style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;letter-spacing:.5px;margin-bottom:2px;">
+                                        ⏱ Tempo de Permanência na Usina</div>
+                                    <div style="font-size:10px;color:#94a3b8;font-weight:600;margin-bottom:10px;">Ciclo:
+                                        Hora Entrada → Hora Saída por viagem. Clique para ver Top 10.</div>
+                                    <div class="perm-grid">
+                                        <div class="perm-card proprio" onclick="openPermanenciaModal('proprio')">
+                                            <div class="perm-card-icon">🟢</div>
+                                            <div class="perm-card-label">Próprio</div>
+                                            <div class="perm-card-avg" id="perm-avg-prop">—</div>
+                                            <div class="perm-card-sub" id="perm-sub-prop">— viagens</div>
+                                            <div class="perm-card-cta">🔍 Ver Top 10 mais longos →</div>
+                                        </div>
+                                        <div class="perm-card terceiro" onclick="openPermanenciaModal('terceiro')">
+                                            <div class="perm-card-icon">🟡</div>
+                                            <div class="perm-card-label">Terceiro</div>
+                                            <div class="perm-card-avg" id="perm-avg-terc">—</div>
+                                            <div class="perm-card-sub" id="perm-sub-terc">— viagens</div>
+                                            <div class="perm-card-cta">🔍 Ver Top 10 mais longos →</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <hr class="coa-separator" style="margin-top:16px;">
+
+                                <div
+                                    style="font-size:11px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:10px;letter-spacing:.5px;">
+                                    💡 Insights Automáticos</div>
+                                <div id="transp-insights" class="coa-insights-box"></div>
+                            </div>
+                        </div>
+                        <div class="balance-card">
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                                <div class="balance-card-title" style="margin:0;">Indicadores de Eficiência</div>
+                                <div style="display:flex;align-items:center;gap:8px;">
+                                    <label for="input-meta-moagem-transp" style="font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;">🎯 Meta Moagem</label>
+                                    <input id="input-meta-moagem-transp" type="number" min="1" step="100" value="19500"
+                                        onchange="setMetaMoagemDiaria(this.value)"
+                                        style="width:100px;padding:6px 10px;border:2px solid #6366f1;border-radius:8px;font-weight:800;font-size:13px;color:#1e293b;text-align:right;">
+                                    <span style="font-size:11px;font-weight:800;color:#6366f1;">t</span>
+                                </div>
+                            </div>
+                            <div class="kpi-grid" style="margin-top:12px;">
+                                <div class="kpi-card" id="prop-card">
+                                    <small>🚛 Próprio (Rodotrem + Treminhão)</small>
+                                    <span class="val" id="val-t-prop">0 t</span>
+                                    <div class="kpi-mini-row" style="margin-top: 10px; grid-template-columns: 1fr 1fr;">
+                                        <div><small>VIAGENS</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="cnt-v-prop">0</div>
+                                        </div>
+                                        <div><small>DENSIDADE</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="dens-prop">0,00</div>
+                                        </div>
+                                    </div>
+                                    <div class="density-info" id="dens-prop-info"></div>
+                                </div>
+                                <div class="kpi-card terc" id="terc-card">
+                                    <small>🚛 Terceiro</small>
+                                    <span class="val" id="val-t-terc">0 t</span>
+                                    <div class="kpi-mini-row" style="margin-top: 10px; grid-template-columns: 1fr 1fr;">
+                                        <div><small>VIAGENS</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="cnt-v-terc">0</div>
+                                        </div>
+                                        <div><small>DENSIDADE</small>
+                                            <div style="font-size: 1.2rem; font-weight: 800;" id="dens-terc">0,00</div>
+                                        </div>
+                                    </div>
+                                    <div class="density-info" id="dens-terc-info"></div>
+                                </div>
+                                <!-- Acumulado total transportado -->
+                                <div class="kpi-card" id="card-transp-acumulado"
+                                    style="background:var(--color-success-bg); border-bottom-color:var(--color-success);">
+                                    <small>📦 ACUMULADO TOTAL TRANSPORTADO (Próprio + Terceiro)</small>
+                                    <span class="val" id="val-transp-total" style="font-size:2rem; color:var(--color-success-text);">0
+                                        t</span>
+                                    <div class="meta-info" id="val-transp-media3h">Média 3h cheias: —</div>
+                                </div>
+                                <div class="kpi-card" id="card-transp-projecao" style="background:var(--color-warning-bg); border-bottom-color:var(--color-warning);">
+                                    <small>⏱️ PROJEÇÃO MOAGEM</small>
+                                    <span class="val" id="val-transp-projecao" style="font-size:2rem; color:var(--color-warning-text);">0
+                                        t</span>
+                                    <div class="density-info" id="val-transp-projecao-info"></div>
+                                </div>
+                                <div class="kpi-card" style="grid-column: span 2;"><small>Raio Médio
+                                        Próprio</small><span class="val" id="raio-prop">0,00</span></div>
+                                <div class="kpi-card terc" style="grid-column: span 2;"><small>Raio Médio
+                                        Terceiro</small><span class="val" id="raio-terc">0,00</span></div>
+                                <div class="kpi-card" id="dens-media-card"
+                                    style="grid-column: span 2;">
+                                    <small>📊 MÉDIA GERAL POR VIAGEM REAL</small>
+                                    <span class="val" id="dens-media-geral" style="font-size: 1.8rem;">0,00</span>
+                                    <div class="warning-info" id="dens-media-info"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ===== ABA DENSIDADE DE CARGA ===== -->

@@ -1,0 +1,7507 @@
+Chart.register(ChartDataLabels);
+
+        // Lê um design token (CSS custom property) já resolvido para o tema atual
+        function getToken(nome, fallback) {
+            const v = getComputedStyle(document.documentElement).getPropertyValue(nome).trim();
+            return v || fallback;
+        }
+
+        // Cor padrão do texto dos gráficos acompanha o tema atual (claro/escuro)
+        Chart.defaults.color = getToken('--chart-text', '#1e293b');
+
+        let balanceData = [];
+        let selectedDay = "TODOS";
+        // ── Rel. Produção — Potencial.xlsx (aba "Planilha1": disponibilidades,
+        // potencial hora a hora, status de caminhões e RPM da moenda) ──────
+        let potencialData = {}; // { hora(6..23,0..5): {dispColh,dispTransb,dispCam,potencial,ida,campo,volta,filaExt,descarga,parado,carretas,rpm} }
+        let potencialLoaded = false;
+        // ── Rel. Produção — METAS.xlsx (metas por fazenda, agregadas por
+        // Frente — frentes com sufixo de letra, ex. "13B", são somadas
+        // à frente base "13") ────────────────────────────────────────────
+        let metasPorFrente = []; // [{frente, fa, raioMedio, meta24h}]
+        let metasLoaded = false;
+        let solinftecData = { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
+        let solinftecLoaded = false;
+        let solinftecPeriodo = ''; // <-- período extraído do cabeçalho (dd/mm/aaaa)
+        let balanceLoaded = false;
+        let charts = {};
+        let labHoraPulseInterval = null;
+
+        // ── Tema claro/escuro ──────────────────────────────────────────
+        function atualizarBotaoTema() {
+            const btn = document.getElementById('btn-theme-toggle');
+            if (!btn) return;
+            const escuro = document.documentElement.getAttribute('data-theme') === 'dark';
+            btn.checked = escuro;
+        }
+
+        function corDeTextoParaGrafico() {
+            return getToken('--chart-text', '#1e293b');
+        }
+
+        
+        function toggleTopMenu() {
+            const collapsed = document.body.classList.toggle('topmenu-collapsed');
+            const btn = document.getElementById('btn-menu-toggle');
+            if (btn) btn.textContent = collapsed ? '⬇️' : '⬆️';
+            try { localStorage.setItem('analiseCoaTopMenuCollapsed', collapsed ? '1' : '0'); } catch (e) { /* localStorage indisponível */ }
+        }
+        window.toggleTopMenu = toggleTopMenu;
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const btn = document.getElementById('btn-menu-toggle');
+            if (btn) btn.textContent = document.body.classList.contains('topmenu-collapsed') ? '⬇️' : '⬆️';
+            
+            // Initialization part
+            try {
+                if (localStorage.getItem('analiseCoaTopMenuCollapsed') === '1') {
+                    document.body.classList.add('topmenu-collapsed');
+                    if (btn) btn.textContent = '⬇️';
+                }
+            } catch (e) {}
+        });
+
+        function toggleTheme() {
+            const escuroAtual = document.documentElement.getAttribute('data-theme') === 'dark';
+            const novoTema = escuroAtual ? 'light' : 'dark';
+            if (novoTema === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+            else document.documentElement.removeAttribute('data-theme');
+            try { localStorage.setItem('analiseCoaTema', novoTema); } catch (e) { /* ignora */ }
+            if (typeof Chart !== 'undefined') Chart.defaults.color = getToken('--chart-text', '#1e293b');
+            atualizarBotaoTema();
+            // re-renderiza os gráficos ativos para que os textos/eixos dos
+            // canvas (Chart.js) também troquem de cor junto com o resto da página
+            atualizarCoresGraficosAtivos();
+        }
+
+        // Re-renderiza os gráficos atualmente visíveis para refletir o novo tema
+        // (o Chart.js desenha texto em <canvas>, que não responde a CSS/variáveis)
+        function atualizarCoresGraficosAtivos() {
+            const tentar = (fn) => { try { if (typeof window[fn] === 'function') window[fn](); } catch (e) {} };
+            if (!balanceLoaded && !solinftecData) return;
+            ['renderLab', 'renderBalance', 'renderBalanceTimeline', 'renderLabTimeline', 'renderPermanencia',
+                'renderHorariaChart', 'renderSolinftec', 'renderDensidade', 'renderDensidadeTimeline',
+                'renderControle', 'renderControleTimeline', 'renderConsumo', 'renderRelProducao'].forEach(tentar);
+        }
+
+        document.addEventListener('DOMContentLoaded', atualizarBotaoTema);
+        let coaData = []; // [{dia, cargaId, analisado: bool, frente}]
+
+        // Classificação global de frentes: Próprias (F08,10,11,12,13,14,15) x Terceiras (F23,30,33,34,35,38,39)
+        const FRENTES_PROPRIA = new Set(['08', '8', '10', '11', '12', '13', '14', '15'].map(n => 'Frente ' + n.padStart(2, '0')));
+        const FRENTES_TERCEIRA = new Set(['23', '30', '33', '34', '35', '38', '39'].map(n => 'Frente ' + n.padStart(2, '0')));
+        let coaShowingRace = false; // controla qual gráfico está visível na coluna direita do COA
+        let horariaRaw = []; // [{dia, hora, frente, peso}]
+        let frenteFilter = { propria: false, terceira: false }; // false = não selecionado
+        let permanenciaData = []; // [{viagem, frota, codMot, nomeMot, entrada, saida, durMin, tipo, dia}]
+        let densidadeRaw = []; // [{dia, diaAgricola, hora, horaAgricola, frente, tipoCarga, tipoNorm, viagem, peso}]
+        let densSelectedDay = 'TODOS';
+        let lastTotalMoagem = 0; // último "totalT" calculado em renderBalance, usado pela Projeção Moagem
+
+        // ═══════════════════════════════════════════════════════════════
+        // ── SINCRONIZAÇÃO EM TEMPO REAL ENTRE COMPUTADORES (Firebase) ─────
+        // Um único documento compartilhado guarda liberacaoControle,
+        // metaMoagemDiaria e as metas do módulo Consumo. Qualquer computador
+        // que abrir este mesmo arquivo lê e escreve nesse documento — quando
+        // alguém muda um valor, todos os outros veem a mudança na hora
+        // (onSnapshot), sem precisar dar F5. Se a internet cair, o app
+        // continua funcionando com o último valor conhecido em localStorage
+        // e volta a sincronizar assim que a conexão retornar.
+        // ═══════════════════════════════════════════════════════════════
+        const firebaseConfig = {
+            apiKey: "AIzaSyDPmYl_E2OTjABRv2ly-Vu-HtbByvArYco",
+            authDomain: "agrosync-f453d.firebaseapp.com",
+            projectId: "agrosync-f453d",
+            storageBucket: "agrosync-f453d.firebasestorage.app",
+            messagingSenderId: "516300911274",
+            appId: "1:516300911274:web:c1090e4ed1434438f516d3"
+        };
+        let syncDocRef = null;
+        let syncApplyingRemote = false; // true enquanto aplica um snapshot remoto (evita re-enviar o que acabou de chegar)
+        const SYNC_SAVE_DEBOUNCE_MS = 600;
+        let syncSaveTimers = {};
+
+        function syncSetStatus(status, detalhe) {
+            const el = document.getElementById('sync-status-badge');
+            if (!el) return;
+            const map = {
+                conectando: { cls: 'sync-badge-conectando', txt: '🟡 Conectando…' },
+                online: { cls: 'sync-badge-online', txt: '🟢 Sincronizado' },
+                offline: { cls: 'sync-badge-offline', txt: '⚠️ Offline — usando dados locais' },
+                erro: { cls: 'sync-badge-offline', txt: '⚠️ Erro de sincronização' }
+            };
+            const s = map[status] || map.offline;
+            el.className = 'sync-badge ' + s.cls;
+            el.textContent = s.txt + (detalhe ? ' · ' + detalhe : '');
+        }
+
+        function initSharedSync() {
+            try {
+                if (!window.firebase) { syncSetStatus('offline', 'SDK indisponível'); return; }
+                syncSetStatus('conectando');
+                firebase.initializeApp(firebaseConfig);
+                const db = firebase.firestore();
+                syncDocRef = db.collection('analisecoa').doc('estadoCompartilhado');
+
+                firebase.auth().signInAnonymously().catch(err => {
+                    console.error('[sync] falha na autenticação:', err);
+                    syncSetStatus('erro', 'autenticação falhou');
+                });
+
+                firebase.auth().onAuthStateChanged(user => {
+                    if (!user) return;
+                    firebaseAuthMarcarPronto(); // libera espelhoProducao/espelhoConsumo p/ ler e escrever
+                    syncDocRef.onSnapshot(
+                        { includeMetadataChanges: true },
+                        snap => applyRemoteSnapshot(snap),
+                        err => {
+                            console.error('[sync] falha ao ouvir alterações:', err);
+                            syncSetStatus('offline', 'sem conexão');
+                        }
+                    );
+                });
+            } catch (err) {
+                console.error('[sync] erro ao iniciar:', err);
+                syncSetStatus('offline', 'indisponível');
+            }
+        }
+
+        function applyRemoteSnapshot(snap) {
+            const fromCache = !!(snap.metadata && snap.metadata.fromCache);
+            syncSetStatus(fromCache ? 'offline' : 'online', fromCache ? 'último dado conhecido' : null);
+            if (!snap.exists) return;
+            const data = snap.data() || {};
+            syncApplyingRemote = true;
+            try {
+                if (data.liberacaoControle && typeof data.liberacaoControle === 'object') {
+                    liberacaoControle = data.liberacaoControle;
+                    try { localStorage.setItem(LIBERACAO_STORE_KEY, JSON.stringify(liberacaoControle)); } catch (_) { }
+                    if (typeof renderLiberacao === 'function') renderLiberacao();
+                    if (typeof checkLiberacaoMetas === 'function') checkLiberacaoMetas();
+                }
+                if (Array.isArray(data.liberacaoHistorico)) {
+                    liberacaoHistorico = data.liberacaoHistorico;
+                    try { localStorage.setItem(LIBERACAO_HIST_KEY, JSON.stringify(liberacaoHistorico)); } catch (_) { }
+                    if (typeof renderLiberacaoHistorico === 'function') renderLiberacaoHistorico();
+                }
+                if (typeof data.metaMoagemDiaria === 'number' && data.metaMoagemDiaria > 0) {
+                    metaMoagemDiaria = data.metaMoagemDiaria;
+                    try { localStorage.setItem(METAMOAGEM_KEY, String(metaMoagemDiaria)); } catch (_) { }
+                    if (typeof renderControle === 'function') renderControle();
+                    if (typeof updateProjecaoMoagem === 'function') updateProjecaoMoagem();
+                }
+                if (data.consumoPrefs && typeof data.consumoPrefs === 'object') {
+                    const p = data.consumoPrefs;
+                    if (p.metasCam) consumoMetasCaminhao = p.metasCam;
+                    if (p.metasCol) consumoMetasColhedoras = p.metasCol;
+                    if (p.metasTpl) consumoMetasTpl = p.metasTpl;
+                    if (p.metCam) consumoMetricaCaminhao = p.metCam;
+                    if (p.metCol) consumoMetricaColhedoras = p.metCol;
+                    if (p.metTpl) consumoMetricaTpl = p.metTpl;
+                    try { localStorage.setItem('consumoPrefsV1', JSON.stringify(p)); } catch (_) { }
+                    if (typeof renderConsumo === 'function') renderConsumo();
+                }
+            } finally {
+                syncApplyingRemote = false;
+            }
+        }
+
+        // Grava um campo no documento compartilhado (merge), com debounce por campo
+        // para não disparar uma escrita a cada tecla digitada.
+        function syncSaveField(fieldName, value) {
+            if (syncApplyingRemote) return; // não reenvia o que acabou de chegar do próprio snapshot
+            clearTimeout(syncSaveTimers[fieldName]);
+            syncSaveTimers[fieldName] = setTimeout(() => {
+                if (!syncDocRef) return;
+                syncDocRef.set(
+                    { [fieldName]: value, _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp() },
+                    { merge: true }
+                ).catch(err => {
+                    console.error('[sync] falha ao salvar ' + fieldName + ':', err);
+                    syncSetStatus('offline', 'falha ao salvar — verifique a internet');
+                });
+            }, SYNC_SAVE_DEBOUNCE_MS);
+        }
+
+        document.addEventListener('DOMContentLoaded', initSharedSync);
+        // ═══════════════════════════════════════════════════════════════
+
+        // ═══════════════════════════════════════════════════════════════
+        //  ESPELHO DE DADOS (Firestore) — "Modo Espectador"
+        //  Reaproveita a mesma conexão do sync acima, mas em documentos
+        //  próprios (analisecoa/espelhoProducao e analisecoa/espelhoConsumo).
+        //  Diferença: aqui não sincronizamos configurações, e sim os DADOS
+        //  já processados de TODAS as abas, para que alguém sem acesso à
+        //  pasta local (Y:\...) veja o mesmo dashboard, quase em tempo real
+        //  — nunca lendo o arquivo original, só o resumo em JSON.
+        //
+        //  Dois documentos, porque as origens são funções diferentes:
+        //   - espelhoProducao: tudo que processBalanceData()/processSolinftecData()
+        //     calculam — alimenta Solinftec, Balança, Densidade de Carga,
+        //     Controle de Carga e Lab (todas dependem de balanceData/coaData/
+        //     horariaRaw/densidadeRaw/etc, todas populadas ali).
+        //   - espelhoConsumo: o que processConsumoFiles() calcula — alimenta
+        //     a aba Consumo (Caminhão/Colhedoras/TPL).
+        //  Controle de Liberação (liberacaoControle/liberacaoHistorico) já
+        //  sincroniza sozinho pelo doc "estadoCompartilhado" (initSharedSync,
+        //  acima), então não precisa de nada novo aqui — só liberacaoUnicos/
+        //  liberacaoRaw (o cruzamento com o Producao.xlsx) entram no pacote
+        //  de espelhoProducao.
+        // ═══════════════════════════════════════════════════════════════
+        let espelhoModoEspectador = false;
+        let espelhoUnsubs = [];
+        let espelhoSaveTimerProducao = null;
+        let espelhoSaveTimerConsumo = null;
+        const ESPELHO_SAVE_DEBOUNCE_MS = 1500;
+
+        // ── Espera a autenticação anônima do Firebase (initSharedSync, acima)
+        //    antes de ler/escrever no Firestore. Sem isso, quem clica em
+        //    "Modo Espectador" logo que a página abre (o caso mais comum)
+        //    tenta ler antes do login anônimo terminar, e as regras de
+        //    segurança do Firestore recusam com "permission-denied" — o que
+        //    aparece pro usuário como "⚠️ Falha ao sincronizar dados remotos".
+        let firebaseAuthPronto = false;
+        let firebaseAuthCallbacks = [];
+        function firebaseAuthMarcarPronto() {
+            if (firebaseAuthPronto) return;
+            firebaseAuthPronto = true;
+            const fila = firebaseAuthCallbacks;
+            firebaseAuthCallbacks = [];
+            fila.forEach(cb => { try { cb(); } catch (e) { console.warn(e); } });
+        }
+        function aoAutenticar(cb) {
+            if (firebaseAuthPronto) { cb(); return; }
+            firebaseAuthCallbacks.push(cb);
+        }
+
+        function espelhoGetDoc(nome) {
+            try {
+                if (!window.firebase || !firebase.apps || !firebase.apps.length) return null;
+                return firebase.firestore().collection('analisecoa').doc(nome);
+            } catch (_) { return null; }
+        }
+
+        // Desliga o Modo Espectador (chamado quando o usuário seleciona uma
+        // pasta local de verdade — a partir daí ele volta a ser "fonte", não
+        // "espectador", e não deve mais sobrescrever a própria tela com o
+        // que chegar do Firestore).
+        function espelhoDesligarEspectador() {
+            espelhoModoEspectador = false;
+            espelhoUnsubs.forEach(fn => { try { fn(); } catch (_) { } });
+            espelhoUnsubs = [];
+            const painel = document.getElementById('espectadorStatus');
+            if (painel) painel.classList.add('hidden');
+        }
+
+        // ── Publicação (lado "fonte" — quem tem a pasta local) ──────────────
+        function espelhoPublicarProducao(origem) {
+            if (espelhoModoEspectador) return;
+            clearTimeout(espelhoSaveTimerProducao);
+            espelhoSaveTimerProducao = setTimeout(() => {
+                aoAutenticar(() => {
+                    const ref = espelhoGetDoc('espelhoProducao');
+                    if (!ref || !window.firebase) return;
+                    const payload = {
+                        origem: origem || '',
+                        balanceData: balanceData,
+                        balanceLoaded: balanceLoaded,
+                        solinftecData: solinftecData,
+                        solinftecLoaded: solinftecLoaded,
+                        solinftecPeriodo: solinftecPeriodo,
+                        coaData: coaData,
+                        horariaRaw: horariaRaw,
+                        permanenciaData: permanenciaData,
+                        densidadeRaw: densidadeRaw,
+                        liberacaoUnicos: liberacaoUnicos,
+                        liberacaoRaw: liberacaoRaw,
+                        lastTotalMoagem: lastTotalMoagem,
+                        _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    ref.set(payload, { merge: true }).catch(err => {
+                        console.warn('[espelho] falha ao publicar dados de produção (' + (err && err.code || 'erro') + ' — se for "permission-denied", checar regras do Firestore; se for tamanho, o documento provavelmente passou de 1MB):', err);
+                        if (typeof showToast === 'function') showToast('⚠️ Falha ao publicar espelho (dados grandes demais?)', '#dc2626');
+                    });
+                });
+            }, ESPELHO_SAVE_DEBOUNCE_MS);
+        }
+
+        function espelhoPublicarConsumo(origem) {
+            if (espelhoModoEspectador) return;
+            clearTimeout(espelhoSaveTimerConsumo);
+            espelhoSaveTimerConsumo = setTimeout(() => {
+                aoAutenticar(() => {
+                    const ref = espelhoGetDoc('espelhoConsumo');
+                    if (!ref || !window.firebase) return;
+                    const payload = {
+                        origem: origem || '',
+                        periodoCaminhao: consumoPeriodoCaminhao,
+                        periodoColhedoras: consumoPeriodoColhedoras,
+                        periodoTpl: consumoPeriodoTpl,
+                        dataRelatorioCaminhao: consumoDataRelatorioCaminhao,
+                        dataRelatorioColhedoras: consumoDataRelatorioColhedoras,
+                        dataRelatorioTpl: consumoDataRelatorioTpl,
+                        colunasCaminhao: consumoColunasCaminhao,
+                        colunasColhedoras: consumoColunasColhedoras,
+                        colunasTpl: consumoColunasTpl,
+                        metricaCaminhao: consumoMetricaCaminhao,
+                        metricaColhedoras: consumoMetricaColhedoras,
+                        metricaTpl: consumoMetricaTpl,
+                        metasCaminhao: consumoMetasCaminhao,
+                        metasColhedoras: consumoMetasColhedoras,
+                        metasTpl: consumoMetasTpl,
+                        dadosCaminhao: consumoCaminhaoData,
+                        dadosColhedoras: consumoColhedorasData,
+                        dadosTpl: consumoTplData,
+                        _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    ref.set(payload, { merge: true }).catch(err => {
+                        console.warn('[espelho] falha ao publicar dados de consumo (' + (err && err.code || 'erro') + '):', err);
+                    });
+                });
+            }, ESPELHO_SAVE_DEBOUNCE_MS);
+        }
+
+        // Chamado em todo lugar que hoje carrega a pasta local — publica os
+        // dois documentos de uma vez.
+        function espelhoPublicarTudo(origem) {
+            espelhoPublicarProducao(origem);
+            espelhoPublicarConsumo(origem);
+            espelhoPublicarRelProducao(origem);
+        }
+
+        // ── Rel. Produção (METAS.xlsx + Potencial.xlsx) — documento PRÓPRIO
+        // no Firestore, separado de "espelhoProducao". Motivo: "espelhoProducao"
+        // já carrega balanceData/coaData/horariaRaw/densidadeRaw da SAFRA
+        // COMPLETA e fica perto do teto de 1MB por documento do Firestore;
+        // metas/potencial são pequenos, mas empilhar em cima de um documento
+        // já quase cheio faz a escrita INTEIRA falhar (nada é publicado, nem
+        // as abas que já funcionavam) — daí o toast "dados grandes demais?".
+        // Um documento separado isola o risco: mesmo que a safra cresça e
+        // "espelhoProducao" fique maior, Rel. Produção continua publicando
+        // normalmente, e vice-versa.
+        let espelhoSaveTimerRelProducao = null;
+        function espelhoPublicarRelProducao(origem) {
+            if (espelhoModoEspectador) return;
+            clearTimeout(espelhoSaveTimerRelProducao);
+            espelhoSaveTimerRelProducao = setTimeout(() => {
+                aoAutenticar(() => {
+                    const ref = espelhoGetDoc('espelhoRelProducao');
+                    if (!ref || !window.firebase) return;
+                    const payload = {
+                        origem: origem || '',
+                        potencialData: potencialData,
+                        potencialLoaded: potencialLoaded,
+                        metasPorFrente: metasPorFrente,
+                        metasLoaded: metasLoaded,
+                        _atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    ref.set(payload, { merge: true }).catch(err => {
+                        console.warn('[espelho] falha ao publicar dados de Rel. Produção (' + (err && err.code || 'erro') + '):', err);
+                        if (typeof showToast === 'function') showToast('⚠️ Falha ao publicar espelho de Rel. Produção', '#dc2626');
+                    });
+                });
+            }, ESPELHO_SAVE_DEBOUNCE_MS);
+        }
+
+        function espelhoAplicarRelProducao(data) {
+            if (!data) return;
+            try {
+                potencialData = data.potencialData || {};
+                potencialLoaded = !!data.potencialLoaded;
+                metasPorFrente = data.metasPorFrente || [];
+                metasLoaded = !!data.metasLoaded;
+                espelhoRecebeuRelProducao = true;
+            } catch (err) {
+                console.error('[espelho] erro ao aplicar dados de Rel. Produção:', err);
+                return;
+            }
+            espelhoRenderTudo();
+        }
+
+        // ── Aplicação (lado "espectador") ────────────────────────────────
+        let espelhoUltimoOrigemProducao = '';
+        let espelhoUltimoOrigemConsumo = '';
+        let espelhoUltimoCarimboProducao = '';
+        let espelhoUltimoCarimboConsumo = '';
+        let espelhoRecebeuProducao = false;
+        let espelhoRecebeuConsumo = false;
+        let espelhoRecebeuRelProducao = false;
+
+        // Painel de status visível — é o que faltava: sem isso, ficar
+        // "aguardando dados" e "deu erro" pareciam a mesma coisa (tela em
+        // branco). Esconde/mostra uploadPrompt x espectadorStatus x
+        // dashboardContent conforme o estágio.
+        function espelhoStatus(icon, titulo, detalhe) {
+            const painel = document.getElementById('espectadorStatus');
+            if (!painel) return;
+            painel.classList.remove('hidden');
+            const iconEl = document.getElementById('espectadorStatusIcon');
+            const tituloEl = document.getElementById('espectadorStatusTitulo');
+            const detalheEl = document.getElementById('espectadorStatusDetalhe');
+            if (iconEl) iconEl.textContent = icon;
+            if (tituloEl) tituloEl.textContent = titulo;
+            if (detalheEl) detalheEl.textContent = detalhe || '';
+        }
+        function espelhoStatusEsconder() {
+            const painel = document.getElementById('espectadorStatus');
+            if (painel) painel.classList.add('hidden');
+        }
+
+        function espelhoAplicarProducao(data) {
+            if (!data) return;
+            try {
+                balanceData = data.balanceData || [];
+                balanceLoaded = !!data.balanceLoaded;
+                solinftecData = data.solinftecData || { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
+                solinftecLoaded = !!data.solinftecLoaded;
+                solinftecPeriodo = data.solinftecPeriodo || '';
+                coaData = data.coaData || [];
+                horariaRaw = data.horariaRaw || [];
+                permanenciaData = data.permanenciaData || [];
+                densidadeRaw = data.densidadeRaw || [];
+                liberacaoUnicos = data.liberacaoUnicos || [];
+                liberacaoRaw = data.liberacaoRaw || [];
+                lastTotalMoagem = data.lastTotalMoagem || 0;
+
+                espelhoUltimoOrigemProducao = data.origem || '';
+                espelhoUltimoCarimboProducao = (data._atualizadoEm && data._atualizadoEm.toDate)
+                    ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
+                espelhoRecebeuProducao = true;
+            } catch (err) {
+                console.error('[espelho] erro ao aplicar dados de produção:', err);
+                espelhoStatus('⚠️', 'Erro ao aplicar dados recebidos', 'Detalhes no console do navegador (F12).');
+                return;
+            }
+            espelhoRenderTudo();
+        }
+
+        function espelhoAplicarConsumo(data) {
+            if (!data) return;
+            try {
+                consumoPeriodoCaminhao = data.periodoCaminhao || '';
+                consumoPeriodoColhedoras = data.periodoColhedoras || '';
+                consumoPeriodoTpl = data.periodoTpl || '';
+                consumoDataRelatorioCaminhao = data.dataRelatorioCaminhao || '';
+                consumoDataRelatorioColhedoras = data.dataRelatorioColhedoras || '';
+                consumoDataRelatorioTpl = data.dataRelatorioTpl || '';
+                consumoColunasCaminhao = data.colunasCaminhao || [];
+                consumoColunasColhedoras = data.colunasColhedoras || [];
+                consumoColunasTpl = data.colunasTpl || [];
+                consumoMetricaCaminhao = data.metricaCaminhao || null;
+                consumoMetricaColhedoras = data.metricaColhedoras || null;
+                consumoMetricaTpl = data.metricaTpl || null;
+                consumoMetasCaminhao = data.metasCaminhao || {};
+                consumoMetasColhedoras = data.metasColhedoras || {};
+                consumoMetasTpl = data.metasTpl || {};
+                consumoCaminhaoData = data.dadosCaminhao || [];
+                consumoColhedorasData = data.dadosColhedoras || [];
+                consumoTplData = data.dadosTpl || [];
+                consumoProcessado = true;
+                // "Finge" que os arquivos estão presentes, só pra as mensagens de
+                // status do módulo Consumo não reclamarem de arquivo faltando.
+                consumoArquivos = {
+                    consCam: consumoCaminhaoData.length ? {} : null,
+                    consCol: consumoColhedorasData.length ? {} : null,
+                    classCam: consumoCaminhaoData.length ? {} : null,
+                    classCol: consumoColhedorasData.length ? {} : null,
+                    consTplGlobal: consumoTplData.length ? {} : null,
+                    classTpl: consumoTplData.length ? {} : null
+                };
+
+                espelhoUltimoOrigemConsumo = data.origem || '';
+                espelhoUltimoCarimboConsumo = (data._atualizadoEm && data._atualizadoEm.toDate)
+                    ? data._atualizadoEm.toDate().toLocaleTimeString('pt-BR') : '';
+                espelhoRecebeuConsumo = true;
+            } catch (err) {
+                console.error('[espelho] erro ao aplicar dados de consumo:', err);
+                espelhoStatus('⚠️', 'Erro ao aplicar dados recebidos', 'Detalhes no console do navegador (F12).');
+                return;
+            }
+            espelhoRenderTudo();
+        }
+
+        // Re-renderiza TODAS as abas com o estado atual (seja ele local ou
+        // vindo do espelho) — as mesmas funções que rodam depois de um
+        // carregamento normal de pasta, só que chamadas de uma vez só, sem
+        // depender de qual aba está ativa no momento.
+        function espelhoRenderTudo() {
+            if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo && !espelhoRecebeuRelProducao) return; // ainda não chegou nada, deixa o painel de status como está
+
+            const origem = espelhoUltimoOrigemProducao || espelhoUltimoOrigemConsumo || '?';
+            const carimbo = espelhoUltimoCarimboProducao || espelhoUltimoCarimboConsumo || '';
+            espelhoStatusEsconder();
+            showDashboard('🪞 Espelho de "' + origem + '"' + (carimbo ? ' · atualizado ' + carimbo : ''));
+
+            let algumErro = false;
+            const tentar = (fn, nome) => {
+                try { if (typeof fn === 'function') fn(); }
+                catch (e) { algumErro = true; console.warn('[espelho] falha ao renderizar ' + nome + ':', e); }
+            };
+            tentar(typeof renderSolinftec !== 'undefined' && renderSolinftec, 'Solinftec');
+            tentar(typeof renderBalanceTimeline !== 'undefined' && renderBalanceTimeline, 'Balança (timeline)');
+            tentar(typeof renderBalance !== 'undefined' && renderBalance, 'Balança');
+            tentar(typeof renderDensidadeTimeline !== 'undefined' && renderDensidadeTimeline, 'Densidade (timeline)');
+            tentar(typeof renderDensidade !== 'undefined' && renderDensidade, 'Densidade');
+            tentar(typeof renderLabTimeline !== 'undefined' && renderLabTimeline, 'Lab (timeline)');
+            tentar(typeof renderLab !== 'undefined' && renderLab, 'Lab');
+            tentar(typeof renderControleTimeline !== 'undefined' && renderControleTimeline, 'Controle (timeline)');
+            tentar(typeof renderControle !== 'undefined' && renderControle, 'Controle');
+            tentar(typeof renderLiberacao !== 'undefined' && renderLiberacao, 'Liberação');
+            tentar(typeof renderConsumo !== 'undefined' && renderConsumo, 'Consumo');
+            // Faltava também — mesmo com os dados chegando, ninguém mandava
+            // essa aba redesenhar no lado espectador.
+            tentar(typeof renderRelProducao !== 'undefined' && renderRelProducao, 'Rel. Produção');
+
+            if (algumErro && typeof showToast === 'function') {
+                showToast('⚠️ Alguma aba não renderizou corretamente — veja o console (F12)', '#dc2626');
+            }
+        }
+
+        // Sai do Modo Espectador e volta pra tela de seleção de pasta.
+        function espelhoCancelar() {
+            espelhoDesligarEspectador();
+            espelhoRecebeuProducao = false;
+            espelhoRecebeuConsumo = false;
+            espelhoRecebeuRelProducao = false;
+            espelhoStatusEsconder();
+            const uploadEl = document.getElementById('uploadPrompt');
+            if (uploadEl) uploadEl.classList.remove('hidden');
+        }
+
+        // Liga o Modo Espectador: não pede pasta nenhuma, só escuta os dois
+        // documentos do Firestore e re-renderiza sempre que o computador de
+        // origem publicar uma atualização (inclusive pelo auto-refresh de
+        // 10 min). Todas as abas ficam navegáveis normalmente — o clique nas
+        // abas continua funcionando como sempre, só que com dados que vieram
+        // do Firestore em vez de um arquivo local.
+        function ativarModoEspectador() {
+            espelhoModoEspectador = true;
+            espelhoRecebeuProducao = false;
+            espelhoRecebeuConsumo = false;
+            espelhoRecebeuRelProducao = false;
+            setAutobanner_off();
+            const uploadEl = document.getElementById('uploadPrompt');
+            if (uploadEl) uploadEl.classList.add('hidden');
+            espelhoStatus('🔄', 'Conectando…', 'Autenticando com o servidor de sincronização…');
+
+            const refProducao = espelhoGetDoc('espelhoProducao');
+            const refConsumo = espelhoGetDoc('espelhoConsumo');
+            const refRelProducao = espelhoGetDoc('espelhoRelProducao');
+            if (!refProducao || !refConsumo || !refRelProducao) {
+                espelhoStatus('⚠️', 'Sincronização indisponível', 'Verifique a internet e recarregue a página.');
+                return;
+            }
+
+            // Só assina o Firestore depois do login anônimo terminar — assinar
+            // antes disso é o que causava "Falha ao sincronizar dados remotos"
+            // (as regras de segurança recusam leitura sem usuário autenticado).
+            aoAutenticar(() => {
+                if (!espelhoModoEspectador) return; // usuário já cancelou antes do login terminar
+                espelhoStatus('👁️', 'Aguardando dados…', 'Peça para alguém carregar a pasta no computador de origem, se ainda não carregou.');
+
+                espelhoUnsubs.push(refProducao.onSnapshot(snap => {
+                    if (!snap.exists) {
+                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo && !espelhoRecebeuRelProducao) {
+                            espelhoStatus('👁️', 'Aguardando dados…', 'Ainda não chegou nenhum dado de produção/balança do computador de origem.');
+                        }
+                        return;
+                    }
+                    espelhoAplicarProducao(snap.data());
+                }, err => {
+                    console.error('[espelho] falha ao escutar dados de produção:', err);
+                    espelhoStatus('⚠️', 'Falha ao sincronizar', '(' + (err && err.code || 'erro') + ') — veja o console (F12) para detalhes.');
+                }));
+
+                espelhoUnsubs.push(refConsumo.onSnapshot(snap => {
+                    if (!snap.exists) {
+                        if (!espelhoRecebeuProducao && !espelhoRecebeuConsumo && !espelhoRecebeuRelProducao) {
+                            espelhoStatus('👁️', 'Aguardando dados…', 'Ainda não chegou nenhum dado de consumo do computador de origem.');
+                        }
+                        return;
+                    }
+                    espelhoAplicarConsumo(snap.data());
+                }, err => {
+                    console.error('[espelho] falha ao escutar dados de consumo:', err);
+                    espelhoStatus('⚠️', 'Falha ao sincronizar', '(' + (err && err.code || 'erro') + ') — veja o console (F12) para detalhes.');
+                }));
+
+                espelhoUnsubs.push(refRelProducao.onSnapshot(snap => {
+                    if (!snap.exists) return; // opcional — não bloqueia o painel de status das outras abas
+                    espelhoAplicarRelProducao(snap.data());
+                }, err => {
+                    console.error('[espelho] falha ao escutar dados de Rel. Produção:', err);
+                }));
+            });
+        }
+        // ═══════════════════════════════════════════════════════════════
+
+
+
+        // ── CONTROLE DE LIBERAÇÃO (Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente) ──
+        let liberacaoUnicos = []; // [{key, codFazenda, descFazenda, liberacao, codFrente}]
+        let liberacaoRaw = [];    // [{key, peso, diaSafra}] — uma linha por registro do Producao.xlsx, com o dia-safra da PRÓPRIA linha (não o dia do relógio)
+        const LIBERACAO_STORE_KEY = 'liberacaoControleV1';
+        const LIBERACAO_HIST_KEY = 'liberacaoHistoricoV1';
+        // { [key]: { ativo, meta, ativadoEm, finalizado, porDia: { "AAAA-MM-DD": bruto } } }
+        // porDia guarda, por dia-safra, o MAIOR bruto já visto para aquela combinação — o
+        // acumulado total é a soma de todos os dias. Isso garante que: (1) o total nunca
+        // zera nem diminui ao virar o dia safra; (2) recarregar o mesmo relatório não soma
+        // em dobro; (3) carregar um relatório de um dia antigo fora de ordem não corrompe
+        // o total de hoje, já que cada dia tem seu próprio "balde" independente.
+        let liberacaoControle = {};
+        let liberacaoHistorico = []; // [{codFazenda, descFazenda, liberacao, codFrente, meta, acumuladoFinal, ativadoEm, encerradoEm, motivo}]
+        let liberacaoAvisados90 = new Set(); // keys já avisadas em 90% da meta no ciclo atual (evita repetir o toast)
+
+        const OP_PRODUTIVO = ['4001', '4009', '4010', '4011', '4012'];
+        const OP_IMPRODUTIVO = ['3048', '3061', '4014', '4015', '3001', '3003', '3047', '3021', '3038'];
+        const OP_MANUTENCAO = ['3009', '3023', '3027', '3010'];
+        const OP_NAMES = {
+            '4001': 'Colhendo Cana', '4009': 'Deslocamento Carregado', '4010': 'Deslocamento Vazio',
+            '4011': 'Transbordo Carregando', '4012': 'Transbordando Carga',
+            '3048': 'Aguardo Descarregar', '3061': 'Aguardando Colhedora',
+            '4014': 'Fila de Transbordo', '4015': 'Manobra Meio Rua',
+            '3001': 'Abastecimento', '3003': 'Aguardando Caminhão',
+            '3047': 'Aguardando Manobra Transbordo', '3021': 'Aguardando Transbordo',
+            '3038': 'Sem Apontamento',
+            '3009': 'Manutenção Oficina', '3023': 'Aguardando Mecânico',
+            '3027': 'Manutenção Mecânica', '3010': 'Lavagem Lubrificacao'
+        };
+
+        function getDensidadeMensagem(densidade, viagens) {
+            if (densidade <= 65) {
+                return {
+                    class: 'densidade-ruim',
+                    emoji: '🔴',
+                    status: 'ABAIXO DO IDEAL',
+                    mensagem: `✅ ${viagens} viagem(is) real(is) | 🔴 ABAIXO DO IDEAL<br>📌 MELHORAR DENSIDADE!!`
+                };
+            }
+            if (densidade <= 69.99) {
+                return {
+                    class: 'densidade-mediano',
+                    emoji: '🟡',
+                    status: 'MEDIANO',
+                    mensagem: `✅ ${viagens} viagem(is) real(is) | 🟡 MEDIANO<br>📌 MELHORAR DENSIDADE!!`
+                };
+            }
+            return {
+                class: 'densidade-otimo',
+                emoji: '🟢',
+                status: 'EXCELENTE',
+                mensagem: `✅ ${viagens} viagem(is) real(is) | 🟢 EXCELENTE<br>📌 Bom desempenho das cargas!!`
+            };
+        }
+
+        // Classificação pela coluna "Tipo Carga"
+        // REGRA: RODOTREM, TREMINHÃO e ROMEU E JULIETA são categorias DISTINTAS —
+        // cada uma com seu próprio card/densidade. Qualquer outra descrição nova
+        // vira SUA PRÓPRIA categoria também. Nunca deve ser somada a outra
+        // classificação existente, pois isso derruba a média/densidade das equipes
+        // que já pertencem àquela categoria.
+        function classificarTipoVeiculoProprio(tipoCarga) {
+            const tipoUpper = normalize(tipoCarga); // sem acento, maiúsculo, trim
+            if (!tipoUpper) return "OUTRO (SEM TIPO CARGA)";
+
+            // ROMEU E JULIETA - categoria própria (NÃO é o mesmo que Rodotrem)
+            if (tipoUpper.includes("ROMEU")) {
+                return "romeuJulieta";
+            }
+
+            // RODOTREM
+            if (tipoUpper.includes("RODOTREM")) {
+                return "rodotrem";
+            }
+
+            // TREMINHÃO
+            if (tipoUpper.includes("TREMINHAO")) {
+                return "treminhao";
+            }
+
+            // Qualquer outra descrição (ex.: "BASCULANTE", "CANAVIEIRO", etc.)
+            // vira sua própria categoria — nunca é somada a "outro" nem às demais.
+            return tipoUpper;
+        }
+
+        function normalize(txt) { return String(txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim(); }
+        // CORRIGIDO: parseNum agora normaliza o padrão numérico brasileiro (vírgula
+        // decimal, ponto de milhar) antes de converter. A versão anterior chamava
+        // parseFloat() direto em strings como "9,52", que o parseFloat interpreta
+        // como 9 (ele para no primeiro caractere não numérico, no caso a vírgula) —
+        // truncando toda casa decimal. Isso só afetava valores que chegam como
+        // TEXTO (relatório .csv, ou .csv salvo/renomeado como .xlsx): valores de um
+        // .xlsx binário genuíno chegam via SheetJS já como Number (ramo acima) e
+        // nunca passavam por esse bug. É essa diferença de caminho de código —
+        // não o formato do arquivo em si — que fazia a projeção variar entre
+        // exportar direto em .xlsx (correto) e salvar/consumir via .csv (errado).
+        function parseNum(val) {
+            if (val === null || val === undefined || val === "") return 0;
+            if (typeof val === 'number') return isNaN(val) ? 0 : val;
+            let s = String(val).trim().replace(/[R$\s]/g, '');
+            if (!s) return 0;
+            const hasComma = s.includes(',');
+            const hasDot = s.includes('.');
+            if (hasComma && hasDot) {
+                // Formato BR com milhar: "1.234,56" -> remove pontos de milhar, vírgula vira ponto decimal
+                s = s.replace(/\./g, '').replace(',', '.');
+            } else if (hasComma) {
+                // "9,52" -> "9.52"
+                s = s.replace(',', '.');
+            }
+            // Só ponto (ou nenhum separador): já está em formato decimal padrão, não mexe
+            const n = parseFloat(s);
+            return isNaN(n) ? 0 : n;
+        }
+
+        // NOVO: o relatório de balança, quando exportado em .csv (ou salvo/renomeado
+        // como .xlsx a partir do .csv), sai com o cabeçalho QUEBRADO em duas linhas:
+        // a linha 1 traz as colunas de identificação (Dia Balança...Tipo Proprietario)
+        // e deixa as 5 últimas colunas em branco; a linha 2 traz só essas 5 últimas
+        // (Peso Bruto, Peso Tara, Peso Líquido, Qtd Viagem, Dist Média), com as
+        // primeiras 41 colunas em branco. Um .xlsx genuíno exportado direto da origem
+        // não tem essa quebra — cabeçalho sai numa linha só. O código antigo sempre
+        // assumia rows[0] como cabeçalho completo e rows.slice(1) como dados, então
+        // com cabeçalho quebrado ele nunca achava a coluna de Peso Líquido (idx ficava
+        // -1) e ainda tratava a 2ª linha do cabeçalho como se fosse um registro de
+        // dado. Esta função detecta o padrão e devolve sempre um cabeçalho único e
+        // consistente, com os dados começando na linha certa — não importa se vieram
+        // de .xlsx binário (cabeçalho normal) ou de .csv com a linha quebrada.
+        function resolveHeaderAndData(rows) {
+            const row0 = (rows && rows[0]) || [];
+            const row1 = (rows && rows[1]) || [];
+            const isFilled = v => v !== undefined && v !== null && String(v).trim() !== '';
+            const looksNumeric = v => !isNaN(parseFloat(String(v).replace(/\./g, '').replace(',', '.')));
+            // A 2ª linha só entra como "continuação de cabeçalho" se, nas colunas em que
+            // a 1ª linha está vazia, ela tiver texto não-numérico (nome de coluna) —
+            // e não valores de dado (número, data, etc).
+            let row1TemRotulosDeCabecalho = false;
+            let row1PareceLinhaDeDado = false;
+            for (let i = 0; i < Math.max(row0.length, row1.length); i++) {
+                const filled0 = isFilled(row0[i]);
+                const v1 = row1[i];
+                const filled1 = isFilled(v1);
+                if (!filled1) continue;
+                if (!filled0 && !looksNumeric(v1)) row1TemRotulosDeCabecalho = true;
+                if (filled0 && looksNumeric(v1)) row1PareceLinhaDeDado = true;
+            }
+            if (row1TemRotulosDeCabecalho && !row1PareceLinhaDeDado) {
+                // Usa o maior comprimento entre as duas linhas: a linha 2 costuma ter
+                // MAIS colunas que a linha 1 (ex.: 46 vs 41), porque é nela que vivem
+                // as colunas finais (Peso Bruto, Peso Tara, Peso Líquido, Qtd Viagem,
+                // Dist Média). Se só percorrêssemos row0.length, essas 5 colunas
+                // seriam perdidas do cabeçalho mesclado — mesmo bug de novo, só que
+                // deslocado para dentro do fix.
+                const width = Math.max(row0.length, row1.length);
+                const headers = new Array(width);
+                for (let i = 0; i < width; i++) {
+                    const h0 = String(row0[i] || '').trim();
+                    const h1 = String(row1[i] || '').trim();
+                    headers[i] = h0 || h1;
+                }
+                return { headers, data: rows.slice(2) };
+            }
+            return { headers: row0, data: rows.slice(1) };
+        }
+        function parseDateISO(value) { if (!value) return null; if (typeof value === 'number') { const date = new Date(Math.round((value - 25569) * 864e5)); return date.toISOString().split('T')[0]; } let str = String(value).trim(); if (/^\d{8}$/.test(str)) return `${str.slice(4, 8)}-${str.slice(2, 4)}-${str.slice(0, 2)}`; let parts = str.split(/[\/\-]/); if (parts.length === 3) { let [d, m, y] = parts; if (d.length === 4) return `${d}-${m.padStart(2, '0')}-${y.padStart(2, '0')}`; if (y.length === 2) y = "20" + y; return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`; } return null; }
+        function classColh(cod) { const s = String(cod || "").trim(); if (s.startsWith("80")) return "propria"; if (s.startsWith("83") || s.startsWith("93")) return "terceira"; return ""; }
+        function fmtMin(m) {
+            const h = Math.floor(m / 60), min = Math.round(m % 60);
+            return h + 'h ' + String(min).padStart(2, '0') + 'min';
+        }
+        function classFrota(cod) { const s = String(cod || "").trim(); if (s.startsWith("31")) return "proprio"; if (s.startsWith("91")) return "terceiro"; return ""; }
+        function fmtT(v) { return v.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' t'; }
+        function getColorByMeta(pct, meta) { if (pct >= meta) return '#2ecc71'; if (pct >= meta * 0.9) return '#3498db'; if (pct >= meta * 0.8) return '#f1c40f'; return '#e74c3c'; }
+        function avg(list) { return list.length ? list.reduce((a, b) => a + b, 0) / list.length : 0; }
+
+        function processBalanceData(rows) {
+            try {
+            if (!rows || rows.length < 2) return;
+            // CORRIGIDO: antes usava rows[0] direto como cabeçalho e data
+            // como dados em todo o resto da função — quebrava quando o relatório
+            // vinha com cabeçalho partido em 2 linhas (ver resolveHeaderAndData acima).
+            const { headers: rawHeaders, data } = resolveHeaderAndData(rows);
+            const headers = rawHeaders.map(h => normalize(h));
+            const idxQtd = headers.findIndex(h => h.includes("QTD") && h.includes("VIAGEM"));
+            const idx = {
+                dia: headers.findIndex(h => h === "DIA BALANCA" || h === "DIA"),
+                data: headers.findIndex(h => h.includes("DATA") && h.includes("ENTRADA")),
+                peso: headers.findIndex(h => h.includes("PESO") && h.includes("LIQ") || h.includes("PESO LÍQUIDO")),
+                qtd: idxQtd,
+                viagem: headers.findIndex((h, i) => h === "VIAGEM" || (h.includes("VIAGEM") && i !== idxQtd)),
+                tipoProp: headers.findIndex(h => h.includes("DSC") && h.includes("TIPO") && h.includes("PROP")),
+                tipoPropFA: headers.findIndex(h => h.includes("TIPO") && h.includes("PROPRIETARIO")),
+                frota: headers.findIndex(h => h.includes("FROTA") && h.includes("MOTRIZ")),
+                raio: headers.findIndex(h => h.includes("DIST") && h.includes("MEDIA")),
+                colh1: headers.findIndex(h => (h.includes("CARREG") || h.includes("COLHED")) && h.includes("1") && !h.includes("2") && !h.includes("3")),
+                tipoCarga: headers.findIndex(h => h.includes("TIPO") && h.includes("CARGA"))
+            };
+
+            const viagensMap = new Map();
+
+            for (const r of data) {
+                if (!r || r.every(c => c === "" || c === null)) continue;
+                const peso = parseNum(r[idx.peso]);
+                if (!(peso > 0)) continue;
+
+                const viagemId = String(r[idx.viagem] || '').trim();
+                if (!viagemId || viagemId === "TOTAL") continue;
+
+                const dia = parseDateISO(r[idx.dia]) || parseDateISO(r[idx.data]);
+                let frota = String(r[idx.frota] || '').trim();
+                let colh = String(r[idx.colh1] || '').trim();
+                let tipo = normalize(r[idx.tipoProp]);
+                if (!tipo) tipo = normalize(r[idx.tipoPropFA]);
+                let raio = parseNum(r[idx.raio]);
+                let tipoCarga = String(r[idx.tipoCarga] || '').trim();
+
+                const colhProp = classColh(colh) === 'propria';
+                const colhTerc = classColh(colh) === 'terceira';
+                let camProp = classFrota(frota) === 'proprio';
+                let camTerc = classFrota(frota) === 'terceiro';
+                if (!camProp && !camTerc) {
+                    camProp = tipo.includes('PROPRI');
+                    camTerc = tipo.includes('FRETE') || tipo.includes('TERCEIRO') || tipo.includes('FRETISTA') || tipo.includes('FORNECEDOR');
+                }
+
+                // Classificar pelo Tipo Carga
+                const subtipoProprio = camProp ? classificarTipoVeiculoProprio(tipoCarga) : null;
+
+                if (!viagensMap.has(viagemId)) {
+                    viagensMap.set(viagemId, {
+                        viagemId: viagemId,
+                        dia: dia,
+                        pesoTotal: 0,
+                        colhProp: colhProp,
+                        colhTerc: colhTerc,
+                        camProp: camProp,
+                        camTerc: camTerc,
+                        subtipoProprio: subtipoProprio,
+                        raio: raio,
+                        contagemLinhas: 0,
+                        frota: frota,
+                        tipoCarga: tipoCarga
+                    });
+                }
+
+                const viagem = viagensMap.get(viagemId);
+                viagem.pesoTotal += peso;
+                viagem.contagemLinhas++;
+
+                if (colhProp) viagem.colhProp = true;
+                if (colhTerc) viagem.colhTerc = true;
+                if (camProp) viagem.camProp = true;
+                if (camTerc) viagem.camTerc = true;
+
+                // Atualizar subtipo se necessário
+                const novoSubtipo = camProp ? classificarTipoVeiculoProprio(tipoCarga) : null;
+                if (novoSubtipo && novoSubtipo !== "outro") {
+                    viagem.subtipoProprio = novoSubtipo;
+                }
+
+                viagem.raio = (viagem.raio + raio) / viagem.contagemLinhas;
+            }
+
+            balanceData = Array.from(viagensMap.values()).map(v => ({
+                dia: v.dia,
+                peso: v.pesoTotal,
+                colhProp: v.colhProp,
+                colhTerc: v.colhTerc,
+                camProp: v.camProp,
+                camTerc: v.camTerc,
+                subtipoProprio: v.subtipoProprio,
+                raio: v.raio,
+                frota: v.frota,
+                tipoCarga: v.tipoCarga
+            }));
+
+            // ── COA: cargas únicas por dia ──────────────────────────────────────
+            const idxCarga = headers.findIndex(h => h === 'CARGA');
+            const idxAnalisado = headers.findIndex(h => h === 'ANALISADO');
+            const idxFrenteCoa = headers.findIndex(h => h.includes('COD') && h.includes('FRENTE'));
+            const idxHora = headers.findIndex(h => h === 'HORA');
+            const coaMap = new Map(); // key: dia|cargaId → {dia, cargaId, analisado, frente, hora}
+            if (idxCarga >= 0 && idxAnalisado >= 0) {
+                for (const r of data) {
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const cargaId = String(r[idxCarga] || '').trim();
+                    const analStr = normalize(r[idxAnalisado]);
+                    const dia = parseDateISO(r[idx.dia]) || parseDateISO(r[idx.data]);
+                    const fCodeCoa = idxFrenteCoa >= 0 ? String(r[idxFrenteCoa] || '').trim() : '';
+                    const frenteCoa = fCodeCoa ? 'Frente ' + fCodeCoa.padStart(2, '0') : null;
+                    const horaCoa = idxHora >= 0 ? parseInt(String(r[idxHora] || '').trim()) : NaN;
+                    if (!cargaId) continue;
+                    const key = `${dia}|${cargaId}`;
+                    if (!coaMap.has(key)) {
+                        coaMap.set(key, { dia, cargaId, analisado: analStr === 'SIM', frente: frenteCoa, hora: isNaN(horaCoa) ? null : horaCoa });
+                    }
+                }
+            }
+            coaData = Array.from(coaMap.values());
+            // ───────────────────────────────────────────────────────────────────
+
+            // ── HORÁRIA: entrada de cana por hora e por frente ───────────────────
+            const idxFrente = headers.findIndex(h => h.includes('COD') && h.includes('FRENTE'));
+            const horariaMap2 = new Map(); // key: dia|hora|frente|prop → {peso}
+            if (idxHora >= 0 && idxFrente >= 0) {
+                for (const r of data) {
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const peso = parseNum(r[idx.peso]);
+                    if (!(peso > 0)) continue;
+                    const dia = parseDateISO(r[idx.dia]) || parseDateISO(r[idx.data]);
+                    let hora = parseInt(String(r[idxHora] || '').trim());
+                    const fCode = String(r[idxFrente] || '').trim();
+                    if (isNaN(hora) || !fCode) continue;
+                    const frente = 'Frente ' + fCode.padStart(2, '0');
+                    // proprio vs terceiro
+                    let frotaH = String(r[idx.frota] || '').trim();
+                    let tipoH = normalize(r[idx.tipoProp] || '');
+                    if (!tipoH) tipoH = normalize(r[idx.tipoPropFA] || '');
+                    let isProp = classFrota(frotaH) === 'proprio'
+                        || tipoH.includes('PROPRI');
+                    let isTerc = classFrota(frotaH) === 'terceiro'
+                        || tipoH.includes('FRETE') || tipoH.includes('TERCEIRO')
+                        || tipoH.includes('FRETISTA') || tipoH.includes('FORNECEDOR');
+                    if (!isProp && !isTerc) continue; // não classificado — não conta em nenhuma série (evita viés artificial)
+                    const ownership = isProp ? 'proprio' : 'terceiro';
+                    const key = `${dia}|${hora}|${frente}|${ownership}`;
+                    horariaMap2.set(key, (horariaMap2.get(key) || 0) + peso);
+                }
+            }
+            horariaRaw = Array.from(horariaMap2.entries()).map(([k, peso]) => {
+                const parts = k.split('|');
+                return { dia: parts[0], hora: parseInt(parts[1]), frente: parts[2], ownership: parts[3], peso };
+            });
+            // ─────────────────────────────────────────────────────────────────────
+
+            // ── DENSIDADE: por viagem única, frente, tipo carga, hora agrícola ───
+            // Dia agrícola: 06:00 do dia D até 05:59 do dia D+1
+            // horaAgricola: 06→23 = posições 0→17, 00→05 = posições 18→23
+            const densMap = new Map(); // key: viagem → record
+            if (idxHora >= 0 && idxFrente >= 0) {
+                for (const r of data) {
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const peso = parseNum(r[idx.peso]);
+                    if (!(peso > 0)) continue;
+                    const viagemId = String(r[idx.viagem] || '').trim();
+                    if (!viagemId || viagemId === 'TOTAL') continue;
+                    const dia = parseDateISO(r[idx.dia]) || parseDateISO(r[idx.data]);
+                    const horaRaw = parseInt(String(r[idxHora] || '').trim());
+                    const fCode = String(r[idxFrente] || '').trim();
+                    const tCarga = String(r[idx.tipoCarga] || '').trim();
+                    if (isNaN(horaRaw) || !fCode || !dia) continue;
+
+                    // Normaliza tipo de carga — RODOTREM, TREMINHÃO e ROMEU E JULIETA
+                    // são categorias DISTINTAS, cada uma com seu próprio grupo/densidade.
+                    // Qualquer descrição nova vira sua própria categoria também.
+                    const tUp = tCarga.toUpperCase();
+                    let tipoNorm;
+                    if (tUp.includes('ROMEU')) tipoNorm = 'ROMEU E JULIETA';
+                    else if (tUp.includes('RODOTREM')) tipoNorm = 'RODOTREM';
+                    else if (tUp.includes('TREMINHAO') || tUp.includes('TREMINHÃO')) tipoNorm = 'TREMINHÃO';
+                    else tipoNorm = tCarga || 'OUTRO';
+
+                    // Dia agrícola = Dia Balança. A coluna "Dia Balanca" já vem corrigida
+                    // pela balança para o ciclo 06:00→05:59 do dia seguinte — NÃO deslocar
+                    // a data aqui de novo, senão um único dia-balança (ex.: 07/07) é
+                    // partido em dois (06/07 e 07/07), derrubando a média das equipes.
+                    const diaAgricola = dia;
+                    // horaAgricola: reordena apenas para EXIBIÇÃO/ordenação: 06,07,...,23,00,01,02,03,04,05
+                    const horaAgricola = horaRaw < 6 ? horaRaw + 24 : horaRaw;
+
+                    const frente = 'Frente ' + fCode.padStart(2, '0');
+                    const key = `${viagemId}`;
+                    // proprio vs terceiro
+                    let frotaD = String(r[idx.frota] || '').trim();
+                    let tipoD = normalize(r[idx.tipoProp] || '');
+                    if (!tipoD) tipoD = normalize(r[idx.tipoPropFA] || '');
+                    const dIsProp = classFrota(frotaD) === 'proprio' || tipoD.includes('PROPRI');
+                    const dIsTerc = classFrota(frotaD) === 'terceiro'
+                        || tipoD.includes('FRETE') || tipoD.includes('TERCEIRO')
+                        || tipoD.includes('FRETISTA') || tipoD.includes('FORNECEDOR');
+                    if (!densMap.has(key)) {
+                        const colhD = String(r[idx.colh1] || '').trim();
+                        densMap.set(key, { dia, diaAgricola, hora: horaRaw, horaAgricola, frente, fCode, tipoCarga: tCarga, tipoNorm, viagem: viagemId, peso: 0, camProp: dIsProp, camTerc: dIsTerc, frota: frotaD, colh: colhD });
+                    }
+                    densMap.get(key).peso += peso;
+                }
+            }
+            densidadeRaw = Array.from(densMap.values());
+            densSelectedDay = 'TODOS';
+            controleSelectedDay = 'TODOS';
+            renderDensidadeTimeline();
+            renderDensidade();
+            // ─────────────────────────────────────────────────────────────────────
+
+            // ── PERMANÊNCIA: ciclo Entrada → Saída por viagem ────────────────────
+            const idxDtEnt = headers.findIndex(h => h.includes('DATA') && h.includes('HORA') && h.includes('ENTRADA'));
+            const idxDtSai = headers.findIndex(h => h.includes('DATA') && h.includes('HORA') && h.includes('SAIDA'));
+            const idxViag = headers.findIndex((h, i) => h === 'VIAGEM' || (h.includes('VIAGEM') && i !== headers.findIndex(hh => hh.includes('QTD') && hh.includes('VIAGEM'))));
+            const idxCodMot = headers.findIndex(h => h.includes('COD') && h.includes('MOTORISTA'));
+            const idxNomMot = headers.findIndex(h => h.includes('DSC') && h.includes('MOTORISTA'));
+            const idxFrotaM = headers.findIndex(h => h.includes('FROTA') && h.includes('MOTRIZ'));
+            const idxTipoPF = headers.findIndex(h => h.includes('DSC') && h.includes('TIPO') && h.includes('PROP'));
+            const permMap = new Map(); // key: viagem → aggregate
+
+            function parseDTstr(val) {
+                if (!val) return null;
+                if (typeof val === 'number') {
+                    // Excel serial datetime
+                    const ms = Math.round((val - 25569) * 864e5);
+                    return new Date(ms);
+                }
+                const s = String(val).trim();
+                // "27/05/2026 04:44" or "2026-05-27 04:44"
+                const m = s.match(/(\d{1,4})[\/\-](\d{1,2})[\/\-](\d{2,4})\s+(\d{1,2}):(\d{2})/);
+                if (!m) return null;
+                let [, a, b, c, hh, mm] = m;
+                let y, mo, d;
+                if (a.length === 4) { y = +a; mo = +b - 1; d = +c; }
+                else { d = +a; mo = +b - 1; y = c.length === 2 ? 2000 + +c : +c; }
+                return new Date(y, mo, d, +hh, +mm);
+            }
+
+            if (idxDtEnt >= 0 && idxDtSai >= 0 && idxViag >= 0) {
+                for (const r of data) {
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const viagem = String(r[idxViag] || '').trim();
+                    if (!viagem) continue;
+                    const dtEnt = parseDTstr(r[idxDtEnt]);
+                    const dtSai = parseDTstr(r[idxDtSai]);
+                    if (!dtEnt || !dtSai) continue;
+                    const durMin = (dtSai - dtEnt) / 60000;
+                    if (durMin < 0 || durMin > 1440) continue; // ignora dados inválidos
+                    const frota = String(r[idxFrotaM] || '').trim();
+                    const codMot = String(r[idxCodMot >= 0 ? idxCodMot : 0] || '').trim();
+                    const nomMot = String(r[idxNomMot >= 0 ? idxNomMot : 0] || '').trim();
+                    const tipoPF = normalize(r[idxTipoPF >= 0 ? idxTipoPF : 0] || '');
+                    const tipo = tipoPF.includes('TERCEIRO') || tipoPF.includes('FRETE') || tipoPF.includes('FRETISTA') || tipoPF.includes('FORNECEDOR') || frota.startsWith('91') ? 'terceiro' : 'proprio';
+                    const dia = parseDateISO(r[idx.dia]) || parseDateISO(r[idx.data]);
+
+                    if (!permMap.has(viagem)) {
+                        permMap.set(viagem, {
+                            viagem, frota, codMot, nomMot, durMin, tipo, dia,
+                            entradaStr: dtEnt.toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+                            saidaStr: dtSai.toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+                            entradaDT: dtEnt, saidaDT: dtSai
+                        });
+                    }
+                }
+            }
+            permanenciaData = Array.from(permMap.values());
+            // ─────────────────────────────────────────────────────────────────────
+
+            // ── CONTROLE DE LIBERAÇÃO: Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente ──
+            const idxCodFazenda = headers.findIndex(h => h.includes('COD') && h.includes('FAZENDA'));
+            const idxDescFazenda = headers.findIndex(h => (h.includes('DESC') || h.includes('NOME')) && h.includes('FAZENDA'));
+            const idxLiberacao = headers.findIndex(h => h.includes('LIBERA'));
+            const idxCodFrenteLib = headers.findIndex(h => h.includes('COD') && h.includes('FRENTE'));
+            liberacaoRaw = [];
+            const liberUnicosMap = new Map();
+            if (idxCodFazenda >= 0) {
+                for (const r of data) {
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const codFazenda = String(r[idxCodFazenda] || '').trim();
+                    if (!codFazenda) continue;
+                    const descFazenda = idxDescFazenda >= 0 ? String(r[idxDescFazenda] || '').trim() : '';
+                    const liberacao = idxLiberacao >= 0 ? String(r[idxLiberacao] || '').trim() : '';
+                    const codFrenteLib = idxCodFrenteLib >= 0 ? String(r[idxCodFrenteLib] || '').trim() : '';
+                    const pesoLib = parseNum(r[idx.peso]);
+                    const key = `${codFazenda}||${descFazenda}||${liberacao}||${codFrenteLib}`;
+                    if (!liberUnicosMap.has(key)) {
+                        liberUnicosMap.set(key, { key, codFazenda, descFazenda, liberacao, codFrente: codFrenteLib });
+                    }
+                    // dia-safra da PRÓPRIA linha (data real do relatório), não a data do relógio —
+                    // assim recarregar um arquivo de um dia antigo nunca corrompe o acumulado de hoje.
+                    const diaLinha = parseDateISO(r[idx.dia]) || parseDateISO(r[idx.data]);
+                    const diaSafraLinha = diaLinha ? getDiaSafraChave(diaLinha) : getDiaSafraChave();
+                    liberacaoRaw.push({ key, peso: pesoLib, diaSafra: diaSafraLinha });
+                }
+            }
+            liberacaoUnicos = Array.from(liberUnicosMap.values())
+                .sort((a, b) => {
+                    const fa = parseInt(String(a.codFrente).replace(/\D/g, ''), 10);
+                    const fb = parseInt(String(b.codFrente).replace(/\D/g, ''), 10);
+                    if (isNaN(fa) && isNaN(fb)) return 0;
+                    if (isNaN(fa)) return 1;
+                    if (isNaN(fb)) return -1;
+                    return fa - fb; // Frente 8 → Frente 38, duplicatas mantêm a ordem original (sort estável)
+                });
+            checkLiberacaoMetas();
+            renderLiberacao();
+            // ─────────────────────────────────────────────────────────────────────
+
+            balanceLoaded = true;
+            selectedDay = "TODOS";
+            renderBalanceTimeline();
+            renderBalance();
+            renderRelProducao();
+            updateStatus();
+        
+            } catch (err) {
+                console.error('[processBalanceData] Erro:', err);
+                showToast('⚠️ Erro ao ' + toast_name + ': ' + err.message, '#dc2626');
+            }
+}
+
+        // ═══════════════════════════════════════════════════════════════
+        //  CONTROLE DE LIBERAÇÃO — por Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente
+        // ═══════════════════════════════════════════════════════════════
+        (function loadLiberacaoControle() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(LIBERACAO_STORE_KEY) || 'null');
+                if (saved && typeof saved === 'object') liberacaoControle = saved;
+            } catch (_) { /* localStorage indisponível */ }
+            try {
+                const savedHist = JSON.parse(localStorage.getItem(LIBERACAO_HIST_KEY) || 'null');
+                if (Array.isArray(savedHist)) liberacaoHistorico = savedHist;
+            } catch (_) { /* localStorage indisponível */ }
+        })();
+
+        function saveLiberacaoControle() {
+            try { localStorage.setItem(LIBERACAO_STORE_KEY, JSON.stringify(liberacaoControle)); } catch (_) { }
+            syncSaveField('liberacaoControle', liberacaoControle);
+        }
+
+        function saveLiberacaoHistorico() {
+            try { localStorage.setItem(LIBERACAO_HIST_KEY, JSON.stringify(liberacaoHistorico)); } catch (_) { }
+            syncSaveField('liberacaoHistorico', liberacaoHistorico);
+        }
+
+        // Dia safra da usina: 06:00 às 05:59 do dia seguinte. Antes das 6h ainda
+        // conta como o dia anterior — usado para saber quando "virou o dia" sem
+        // zerar o acumulado de uma liberação que continua ativa.
+        function getDiaSafraChave(date = new Date()) {
+            const d = new Date(date);
+            if (d.getHours() < 6) d.setDate(d.getDate() - 1);
+            return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        }
+
+        // Roda a cada novo carregamento de dados: para cada combinação Fazenda/Frente vista no
+        // relatório, guarda o maior valor bruto já visto PARA O DIA-SAFRA DAQUELA LINHA (não o
+        // dia do relógio) e soma todos os dias já guardados. Isso garante que:
+        //  • o acumulado NUNCA diminui — cada dia só é atualizado se o novo valor for maior;
+        //  • carregar o mesmo relatório duas vezes não soma em dobro (não é `+=`, é `max`);
+        //  • carregar um relatório de um dia antigo (ex.: dia 8) enquanto já se está no dia 10
+        //    não corrompe o total de hoje — cada dia tem seu próprio "balde" independente.
+        function atualizarContinuidadeLiberacao() {
+            let mudou = false;
+
+            // migração do formato antigo (acumuladoAnterior/ultimoBruto/ultimoDiaSafra) —
+            // preserva o total já acumulado por usuários que já usavam a versão anterior.
+            for (const key of Object.keys(liberacaoControle)) {
+                const st = liberacaoControle[key];
+                if (st && !st.porDia && (st.acumuladoAnterior || st.ultimoBruto)) {
+                    st.porDia = {};
+                    const diaMigracao = st.ultimoDiaSafra || 'legado';
+                    st.porDia[diaMigracao] = (st.acumuladoAnterior || 0) + (st.ultimoBruto || 0);
+                    delete st.acumuladoAnterior; delete st.ultimoBruto; delete st.ultimoDiaSafra;
+                    mudou = true;
+                }
+            }
+
+            // soma bruta por (key, dia-safra-da-linha) a partir dos dados recém-carregados
+            const brutoPorKeyDia = new Map(); // "key||dia" -> soma
+            liberacaoRaw.forEach(r => {
+                const k = r.key + '||' + r.diaSafra;
+                brutoPorKeyDia.set(k, (brutoPorKeyDia.get(k) || 0) + r.peso);
+            });
+
+            for (const [kd, bruto] of brutoPorKeyDia.entries()) {
+                const sep = kd.lastIndexOf('||');
+                const key = kd.slice(0, sep);
+                const dia = kd.slice(sep + 2);
+                let st = liberacaoControle[key];
+                if (!st) { st = liberacaoControle[key] = { ativo: false, meta: null }; }
+                if (!st.porDia) st.porDia = {};
+                const anterior = st.porDia[dia] || 0;
+                if (bruto > anterior) { st.porDia[dia] = bruto; mudou = true; }
+            }
+
+            if (mudou) saveLiberacaoControle();
+        }
+
+        function getAcumuladoLiberacao(key) {
+            const st = liberacaoControle[key];
+            if (!st || !st.porDia) return 0;
+            return Object.values(st.porDia).reduce((a, b) => a + b, 0);
+        }
+
+        function liberacaoRotulo(item) {
+            return `${item.codFazenda} — ${item.descFazenda || 'sem descrição'} | Liberação: ${item.liberacao || '-'} | Frente: ${item.codFrente || '-'}`;
+        }
+
+        function switchLiberacaoSubTab(tab) {
+            document.getElementById('liberacao-subtab-ativos').classList.toggle('active', tab === 'ativos');
+            document.getElementById('liberacao-subtab-historico').classList.toggle('active', tab === 'historico');
+            document.getElementById('liberacao-painel-ativos').style.display = tab === 'ativos' ? '' : 'none';
+            document.getElementById('liberacao-painel-historico').style.display = tab === 'historico' ? '' : 'none';
+            if (tab === 'historico') renderLiberacaoHistorico();
+        }
+
+        const LIBERACAO_HIST_POR_PAGINA = 10;
+        let liberacaoHistoricoPagina = 1;
+
+        function renderLiberacaoHistorico() {
+            const tbody = document.getElementById('liberacao-historico-tbody');
+            const msg = document.getElementById('liberacao-historico-msg');
+            const paginacao = document.getElementById('liberacao-historico-paginacao');
+            if (!tbody) return;
+            const lista = (liberacaoHistorico || []).slice().sort((a, b) => (b.encerradoEm || 0) - (a.encerradoEm || 0));
+            if (!lista.length) {
+                tbody.innerHTML = '';
+                if (msg) msg.innerHTML = '<div class="consumo-msg-info">Nenhuma liberação encerrada ainda.</div>';
+                if (paginacao) paginacao.innerHTML = '';
+                return;
+            }
+            if (msg) msg.innerHTML = '';
+
+            const totalPaginas = Math.max(1, Math.ceil(lista.length / LIBERACAO_HIST_POR_PAGINA));
+            if (liberacaoHistoricoPagina > totalPaginas) liberacaoHistoricoPagina = totalPaginas;
+            if (liberacaoHistoricoPagina < 1) liberacaoHistoricoPagina = 1;
+
+            const inicio = (liberacaoHistoricoPagina - 1) * LIBERACAO_HIST_POR_PAGINA;
+            const paginaAtualLista = lista.slice(inicio, inicio + LIBERACAO_HIST_POR_PAGINA);
+
+            const fmtData = (ts) => ts ? new Date(ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
+            tbody.innerHTML = paginaAtualLista.map(h => `
+                <tr>
+                    <td>${h.codFazenda || '-'}</td>
+                    <td>${h.descFazenda || '-'}</td>
+                    <td>${h.liberacao || '-'}</td>
+                    <td>${h.codFrente || '-'}</td>
+                    <td>${fmtT(h.meta)}</td>
+                    <td>${fmtT(h.acumuladoFinal)}</td>
+                    <td>${fmtData(h.ativadoEm)}</td>
+                    <td>${fmtData(h.encerradoEm)}</td>
+                    <td>${h.motivo || '-'}</td>
+                </tr>
+            `).join('');
+
+            if (paginacao) {
+                paginacao.innerHTML =
+                    `<button onclick="mudarPaginaLiberacaoHistorico(-1)" ${liberacaoHistoricoPagina <= 1 ? 'disabled' : ''}>‹ Anterior</button>` +
+                    `<span class="pagina-info">Página ${liberacaoHistoricoPagina} de ${totalPaginas} (${lista.length} registros)</span>` +
+                    `<button onclick="mudarPaginaLiberacaoHistorico(1)" ${liberacaoHistoricoPagina >= totalPaginas ? 'disabled' : ''}>Próxima ›</button>`;
+            }
+        }
+
+        function mudarPaginaLiberacaoHistorico(delta) {
+            liberacaoHistoricoPagina += delta;
+            renderLiberacaoHistorico();
+        }
+
+        function renderLiberacao() {
+            const tbody = document.getElementById('liberacao-tbody');
+            const msg = document.getElementById('liberacao-msg');
+            const resumo = document.getElementById('liberacao-resumo');
+            if (!tbody) return;
+
+            const visiveis = liberacaoUnicos.filter(it => !(liberacaoControle[it.key] && liberacaoControle[it.key].finalizado));
+
+            if (!liberacaoUnicos.length) {
+                tbody.innerHTML = '';
+                if (msg) msg.innerHTML = '<div class="consumo-msg-info">⏳ Nenhum dado de Fazenda/Liberação/Frente encontrado no Producao.xlsx carregado.</div>';
+                if (resumo) resumo.innerHTML = '';
+                return;
+            }
+            if (!visiveis.length) {
+                tbody.innerHTML = '';
+                if (msg) msg.innerHTML = '<div class="consumo-msg-info">✅ Todas as liberações foram finalizadas. Veja o histórico na aba ao lado.</div>';
+                if (resumo) resumo.innerHTML = `<div class="liberacao-resumo-item"><span class="n">${liberacaoUnicos.length}</span>combinações</div>`;
+                return;
+            }
+            if (msg) msg.innerHTML = '';
+
+            const ativos = visiveis.filter(it => liberacaoControle[it.key] && liberacaoControle[it.key].ativo);
+            if (resumo) {
+                resumo.innerHTML =
+                    `<div class="liberacao-resumo-item"><span class="n">${liberacaoUnicos.length}</span>combinações</div>` +
+                    `<div class="liberacao-resumo-item"><span class="n">${ativos.length}</span>em controle 🟢</div>`;
+            }
+
+            tbody.innerHTML = visiveis.map((item) => {
+                const i = liberacaoUnicos.indexOf(item);
+                const st = liberacaoControle[item.key] || { ativo: false, meta: null };
+                const acumulado = st.ativo ? getAcumuladoLiberacao(item.key) : null;
+                const processado = getAcumuladoLiberacao(item.key);
+                let controleCell;
+                if (st.ativo) {
+                    const pct = st.meta > 0 ? Math.min(100, (acumulado / st.meta) * 100) : 0;
+                    const estourou = acumulado >= st.meta;
+                    const proximo = !estourou && st.meta > 0 && acumulado >= st.meta * 0.9;
+                    const barColor = estourou ? '#ef4444' : (proximo ? '#f59e0b' : '#40800c');
+                    const avisoHtml = proximo
+                        ? `<div class="liberacao-aviso-proximo">⚠️ Próximo da meta — faltam ${fmtT(st.meta - acumulado)}</div>`
+                        : '';
+                    controleCell =
+                        `<div style="display:flex;gap:6px;flex-wrap:wrap;">` +
+                        `<button class="liberacao-btn ativo" onclick="toggleLiberacaoControle(${i})">🟢 Controlando</button>` +
+                        `<button class="liberacao-btn finalizar" onclick="finalizarLiberacao(${i})">🏁 Finalizar</button>` +
+                        `</div>` +
+                        `<div class="liberacao-progress">Acumulado: <span class="${estourou ? 'valor-alerta' : 'valor-ok'}">${fmtT(acumulado)}</span> / Meta: ${fmtT(st.meta)}</div>` +
+                        `<div class="liberacao-bar-bg"><div class="liberacao-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>` +
+                        avisoHtml;
+                } else {
+                    controleCell =
+                        `<div style="display:flex;gap:6px;flex-wrap:wrap;">` +
+                        `<button class="liberacao-btn inativo" onclick="toggleLiberacaoControle(${i})">🔴 Inativo</button>` +
+                        `<button class="liberacao-btn finalizar" onclick="finalizarLiberacao(${i})">🏁 Finalizar</button>` +
+                        `</div>`;
+                }
+                return '<tr>' +
+                    `<td>${consumoEscHtml(item.codFazenda)}</td>` +
+                    `<td>${consumoEscHtml(item.descFazenda || '-')}</td>` +
+                    `<td>${consumoEscHtml(item.liberacao || '-')}</td>` +
+                    `<td>${consumoEscHtml(item.codFrente || '-')}</td>` +
+                    `<td>${fmtT(processado)}</td>` +
+                    `<td>${controleCell}</td>` +
+                    '</tr>';
+            }).join('');
+        }
+
+        // Ativa/desativa manualmente o controle de uma linha ao clicar no botão
+        function toggleLiberacaoControle(i) {
+            const item = liberacaoUnicos[i];
+            if (!item) return;
+            const rotulo = liberacaoRotulo(item);
+            const st = liberacaoControle[item.key] || { ativo: false, meta: null };
+
+            if (st.ativo) {
+                // Desativação manual — mantém o histórico de acumulado por dia (porDia) intacto,
+                // só desliga o alerta de meta. A linha continua na lista como "Inativo".
+                abrirLiberacaoConfirmModal(
+                    `Deseja desativar manualmente o controle de liberação para:\n${rotulo}\n?`,
+                    'Sim, desativar', null,
+                    () => {
+                        registrarHistoricoLiberacao(item, st, 'Desativado manualmente');
+                        st.ativo = false;
+                        saveLiberacaoControle();
+                        renderLiberacao();
+                    },
+                    null
+                );
+                return;
+            }
+
+            // Ativação: pede a quantidade em toneladas para o alerta
+            abrirLiberacaoInputModal(rotulo, 0, (num) => {
+                liberacaoAvisados90.delete(item.key);
+                if (!liberacaoControle[item.key]) liberacaoControle[item.key] = {};
+                liberacaoControle[item.key].ativo = true;
+                liberacaoControle[item.key].meta = num;
+                liberacaoControle[item.key].ativadoEm = Date.now();
+                saveLiberacaoControle();
+                renderLiberacao();
+                checkLiberacaoMetas();
+            });
+        }
+
+        // Finaliza definitivamente uma liberação: registra no histórico com o acumulado
+        // final e some da lista de Ativos/Inativos (para não ficar controlando para sempre).
+        function finalizarLiberacao(i) {
+            const item = liberacaoUnicos[i];
+            if (!item) return;
+            const rotulo = liberacaoRotulo(item);
+            if (!liberacaoControle[item.key]) liberacaoControle[item.key] = { ativo: false, meta: null };
+            const st = liberacaoControle[item.key];
+            abrirLiberacaoConfirmModal(
+                `Finalizar esta liberação?\n${rotulo}\nAcumulado final: ${fmtT(getAcumuladoLiberacao(item.key))}\n\nEla sairá da lista e ficará registrada no Histórico.`,
+                'Sim, finalizar', null,
+                () => {
+                    registrarHistoricoLiberacao(item, st, 'Finalizado pelo usuário');
+                    st.ativo = false;
+                    st.finalizado = true;
+                    saveLiberacaoControle();
+                    renderLiberacao();
+                },
+                null
+            );
+        }
+
+        // Verifica, para cada linha ativa, se o acumulado atingiu/ultrapassou a meta.
+        // Se sim, pergunta se deve desativar; se não, pede um novo valor (maior que o anterior).
+        // Processa uma fila (uma linha por vez) para não empilhar vários modais ao mesmo tempo.
+        function checkLiberacaoMetas() {
+            atualizarContinuidadeLiberacao(); // garante que o acumulado não zere ao virar o dia safra
+
+            // Aviso antecipado: dispara quando falta 10% (ou menos) para atingir a meta,
+            // para não deixar entrar mais quantidade do que o necessário.
+            liberacaoUnicos.forEach(item => {
+                const st = liberacaoControle[item.key];
+                if (!st || !st.ativo || !(st.meta > 0)) return;
+                const acumulado = getAcumuladoLiberacao(item.key);
+                if (acumulado >= st.meta * 0.9 && acumulado < st.meta) {
+                    if (!liberacaoAvisados90.has(item.key)) {
+                        liberacaoAvisados90.add(item.key);
+                        const restante = st.meta - acumulado;
+                        const pctRestante = (100 - (acumulado / st.meta * 100)).toFixed(1);
+                        showToast(`⚠️ ${liberacaoRotulo(item)}\nPróximo da meta — faltam ${fmtT(restante)} (${pctRestante}% restante)`, '#f59e0b');
+                    }
+                } else {
+                    liberacaoAvisados90.delete(item.key); // saiu da faixa de 90% — pode avisar de novo se voltar a se aproximar
+                }
+            });
+
+            const pendentes = liberacaoUnicos.filter(item => {
+                const st = liberacaoControle[item.key];
+                return st && st.ativo && getAcumuladoLiberacao(item.key) >= st.meta;
+            });
+            processarFilaLiberacao(pendentes);
+        }
+
+        function processarFilaLiberacao(fila) {
+            if (!fila.length) { renderLiberacao(); return; }
+            const item = fila[0];
+            const resto = fila.slice(1);
+            const st = liberacaoControle[item.key];
+            if (!st || !st.ativo || getAcumuladoLiberacao(item.key) < st.meta) {
+                processarFilaLiberacao(resto);
+                return;
+            }
+            const rotulo = liberacaoRotulo(item);
+            const acumulado = getAcumuladoLiberacao(item.key);
+            abrirLiberacaoConfirmModal(
+                `⚠️ ${rotulo}\n\natingiu a meta estabelecida!!\n\nAcumulado: ${fmtT(acumulado)} / Meta: ${fmtT(st.meta)}\n\nDesativar o controle?`,
+                'Sim, desativar', 'Não, novo valor',
+                () => { // Sim
+                    registrarHistoricoLiberacao(item, st, 'Atingiu a meta');
+                    st.ativo = false;
+                    saveLiberacaoControle();
+                    processarFilaLiberacao(resto);
+                },
+                () => { // Não → pede novo valor (deve ser maior que o anterior) — mesmo ciclo, mantém histórico de continuidade
+                    abrirLiberacaoInputModal(rotulo, st.meta, (novo) => {
+                        liberacaoAvisados90.delete(item.key);
+                        liberacaoControle[item.key] = { ...st, ativo: true, meta: novo };
+                        saveLiberacaoControle();
+                        processarFilaLiberacao(resto);
+                    });
+                }
+            );
+        }
+
+        // Registra no histórico uma liberação que acabou de ser encerrada (manual ou por meta atingida)
+        function registrarHistoricoLiberacao(item, st, motivo) {
+            const acumuladoFinal = getAcumuladoLiberacao(item.key);
+            liberacaoHistorico.push({
+                codFazenda: item.codFazenda, descFazenda: item.descFazenda,
+                liberacao: item.liberacao, codFrente: item.codFrente,
+                meta: st.meta, acumuladoFinal,
+                ativadoEm: st.ativadoEm || null,
+                encerradoEm: Date.now(),
+                motivo
+            });
+            saveLiberacaoHistorico();
+        }
+
+        // ── Modal de valor (ativar / novo valor) ──────────────────────────
+        let liberacaoInputCtx = { minValor: 0, onSave: null };
+        function abrirLiberacaoInputModal(rotulo, minValor, onSave) {
+            liberacaoInputCtx = { minValor, onSave };
+            document.getElementById('liberacao-input-title').textContent =
+                minValor > 0 ? 'Novo valor de controle' : 'Definir meta de controle';
+            document.getElementById('liberacao-input-desc').textContent = minValor > 0
+                ? `Informe o novo valor em toneladas para:\n${rotulo}\n(deve ser maior que ${fmtT(minValor)})`
+                : `Informe a quantidade em toneladas para o alerta de:\n${rotulo}\n(não pode passar deste valor)`;
+            const inputEl = document.getElementById('liberacao-input-valor');
+            inputEl.value = '';
+            document.getElementById('liberacao-input-erro').style.display = 'none';
+            document.getElementById('liberacao-input-modal').classList.add('active');
+            setTimeout(() => inputEl.focus(), 50);
+        }
+        function closeLiberacaoInputModal() {
+            document.getElementById('liberacao-input-modal').classList.remove('active');
+            liberacaoInputCtx = { minValor: 0, onSave: null };
+        }
+        function confirmLiberacaoInputModal() {
+            const raw = document.getElementById('liberacao-input-valor').value;
+            const erro = document.getElementById('liberacao-input-erro');
+            const num = Number(String(raw).replace(',', '.').trim());
+            if (raw === '' || isNaN(num) || num <= 0) {
+                erro.textContent = 'Informe somente números maiores que zero.';
+                erro.style.display = 'block';
+                return;
+            }
+            if (liberacaoInputCtx.minValor > 0 && num <= liberacaoInputCtx.minValor) {
+                erro.textContent = `O novo valor deve ser maior que ${fmtT(liberacaoInputCtx.minValor)}.`;
+                erro.style.display = 'block';
+                return;
+            }
+            const cb = liberacaoInputCtx.onSave;
+            closeLiberacaoInputModal();
+            if (cb) cb(num);
+        }
+        function liberacaoInputKeydown(ev) {
+            if (ev.key === 'Enter') confirmLiberacaoInputModal();
+            else if (ev.key === 'Escape') closeLiberacaoInputModal();
+        }
+
+        // ── Modal de confirmação (sim/não) ────────────────────────────────
+        let liberacaoConfirmCtx = { onYes: null, onNo: null };
+        function abrirLiberacaoConfirmModal(msg, yesLabel, noLabel, onYes, onNo) {
+            document.getElementById('liberacao-confirm-msg').textContent = msg;
+            const btnYes = document.getElementById('liberacao-confirm-btn-yes');
+            const btnNo = document.getElementById('liberacao-confirm-btn-no');
+            btnYes.textContent = yesLabel || 'Sim';
+            btnYes.style.display = 'inline-block';
+            if (noLabel) { btnNo.textContent = noLabel; btnNo.style.display = 'inline-block'; }
+            else { btnNo.style.display = 'none'; }
+            liberacaoConfirmCtx = { onYes, onNo };
+            document.getElementById('liberacao-confirm-modal').classList.add('active');
+        }
+        function liberacaoConfirmResposta(resp) {
+            document.getElementById('liberacao-confirm-modal').classList.remove('active');
+            const { onYes, onNo } = liberacaoConfirmCtx;
+            liberacaoConfirmCtx = { onYes: null, onNo: null };
+            if (resp === true && onYes) onYes();
+            else if (resp === false && onNo) onNo();
+        }
+
+        function renderBalanceTimeline() {
+            const dias = [...new Set(balanceData.map(d => d.dia))].filter(Boolean).sort();
+            const container = document.getElementById('balance-timeline');
+            if (!container) return;
+            container.innerHTML = '';
+            const addBtn = (id, label) => {
+                const btn = document.createElement('div');
+                btn.className = `day-badge ${selectedDay === id ? 'active' : ''}`;
+                btn.innerText = label;
+                btn.onclick = () => { selectedDay = id; renderBalance(); renderBalanceTimeline(); renderLabTimeline(); renderLab(); renderRelProducao(); };
+                container.appendChild(btn);
+            };
+            addBtn("TODOS", "SAFRA COMPLETA");
+            dias.forEach(d => { const p = d.split('-'); addBtn(d, `${p[2]}/${p[1]}`); });
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  ABA LAB — timeline de dias (reaproveita o mesmo selectedDay global
+        //  usado pela aba Análise Balança, para manter tudo sincronizado)
+        // ═══════════════════════════════════════════════════════════════
+        function renderLabTimeline() {
+            const dias = [...new Set(coaData.map(d => d.dia))].filter(Boolean).sort();
+            const container = document.getElementById('lab-timeline');
+            if (!container) return;
+            container.innerHTML = '';
+            const addBtn = (id, label) => {
+                const btn = document.createElement('div');
+                btn.className = `day-badge ${selectedDay === id ? 'active' : ''}`;
+                btn.innerText = label;
+                btn.onclick = () => { selectedDay = id; renderBalanceTimeline(); renderLabTimeline(); renderLab(); };
+                container.appendChild(btn);
+            };
+            addBtn("TODOS", "SAFRA COMPLETA");
+            dias.forEach(d => { const p = d.split('-'); addBtn(d, `${p[2]}/${p[1]}`); });
+        }
+
+        // Turno: A = 08h-15h · B = 16h-23h · C = 00h-07h
+        function horaParaTurno(h) {
+            if (h === null || h === undefined || isNaN(h)) return null;
+            if (h >= 8 && h <= 15) return 'A';
+            if (h >= 16 && h <= 23) return 'B';
+            if (h >= 0 && h <= 7) return 'C';
+            return null;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  renderLab — Cargas por Hora/Turno (tabela + gráfico) + COA movido
+        // ═══════════════════════════════════════════════════════════════
+        function renderLab() {
+            if (!balanceLoaded) return;
+
+            // A aba Lab abriga o card ANÁLISE COA (mesmos IDs de antes)
+            renderCOA();
+
+            const dados = selectedDay === "TODOS" ? coaData : coaData.filter(d => d.dia === selectedDay);
+
+            // ── agrupar por turno/hora ──────────────────────────────────
+            const horaMap = new Map(); // hora → {total, sim}
+            dados.forEach(d => {
+                if (d.hora === null || d.hora === undefined || isNaN(d.hora)) return;
+                if (!horaMap.has(d.hora)) horaMap.set(d.hora, { total: 0, sim: 0 });
+                const e = horaMap.get(d.hora);
+                e.total++;
+                if (d.analisado) e.sim++;
+            });
+
+            const ORDEM_TURNO = ['A', 'B', 'C'];
+            const HORAS_TURNO = { A: [8, 9, 10, 11, 12, 13, 14, 15], B: [16, 17, 18, 19, 20, 21, 22, 23], C: [0, 1, 2, 3, 4, 5, 6, 7] };
+            const meta = 30;
+
+            const pctBadge = (sim, total) => {
+                if (total === 0) return '<span class="lab-pct-badge lab-pct-vazio">—</span>';
+                const pct = (sim / total * 100);
+                const cls = pct >= meta ? 'lab-pct-bom' : 'lab-pct-ruim';
+                return `<span class="lab-pct-badge ${cls}">${pct.toFixed(0)}%</span>`;
+            };
+
+            // ── tabela Turno/Hora ───────────────────────────────────────
+            const tbody = document.getElementById('lab-hora-tbody');
+            const turnoStats = { A: { total: 0, sim: 0 }, B: { total: 0, sim: 0 }, C: { total: 0, sim: 0 } };
+            let totalGeral = 0, simGeral = 0;
+
+            if (tbody) {
+                let rowsHtml = '';
+                ORDEM_TURNO.forEach(turno => {
+                    HORAS_TURNO[turno].forEach((h, i) => {
+                        const e = horaMap.get(h) || { total: 0, sim: 0 };
+                        turnoStats[turno].total += e.total;
+                        turnoStats[turno].sim += e.sim;
+                        totalGeral += e.total;
+                        simGeral += e.sim;
+                        rowsHtml += `<tr class="lab-turno-row-${turno}">
+                            <td class="lab-col-turno">${i === 0 ? turno : ''}</td>
+                            <td>${String(h).padStart(2, '0')}</td>
+                            <td>${e.total}</td>
+                            <td>${e.sim}</td>
+                            <td>${pctBadge(e.sim, e.total)}</td>
+                        </tr>`;
+                    });
+                    rowsHtml += `<tr class="lab-turno-summary-row">
+                        <td colspan="2">Subtotal ${turno}</td>
+                        <td>${turnoStats[turno].total}</td>
+                        <td>${turnoStats[turno].sim}</td>
+                        <td>${pctBadge(turnoStats[turno].sim, turnoStats[turno].total)}</td>
+                    </tr>`;
+                });
+                tbody.innerHTML = rowsHtml;
+            }
+
+            // ── KPIs gerais ──────────────────────────────────────────────
+            const elTotalCargas = document.getElementById('lab-total-cargas');
+            const elTotalAnalisadas = document.getElementById('lab-total-analisadas');
+            const elTotalPct = document.getElementById('lab-total-pct');
+            const pctGeral = totalGeral > 0 ? (simGeral / totalGeral * 100) : 0;
+            if (elTotalCargas) elTotalCargas.innerText = totalGeral;
+            if (elTotalAnalisadas) elTotalAnalisadas.innerText = simGeral;
+            if (elTotalPct) elTotalPct.innerText = totalGeral > 0 ? pctGeral.toFixed(0) + '%' : '—';
+
+            // ── mini tabela % por turno ──────────────────────────────────
+            const turnoTbody = document.getElementById('lab-turno-tbody');
+            if (turnoTbody) {
+                turnoTbody.innerHTML = ORDEM_TURNO.map(turno => `<tr>
+                    <td style="font-weight:800;">${turno}</td>
+                    <td>${turnoStats[turno].total}</td>
+                    <td>${turnoStats[turno].sim}</td>
+                    <td>${pctBadge(turnoStats[turno].sim, turnoStats[turno].total)}</td>
+                </tr>`).join('');
+            }
+
+            // ── gráfico: cargas totais × analisadas por hora ─────────────
+            const chartCanvas = document.getElementById('lab-hora-chart-canvas');
+            if (!chartCanvas) return;
+            if (charts['lab-hora-chart']) { charts['lab-hora-chart'].destroy(); delete charts['lab-hora-chart']; }
+            if (labHoraPulseInterval) { clearInterval(labHoraPulseInterval); labHoraPulseInterval = null; }
+
+            const horasOrdenadas = [...HORAS_TURNO.A, ...HORAS_TURNO.B, ...HORAS_TURNO.C];
+            const labelsHora = horasOrdenadas.map(h => String(h).padStart(2, '0') + 'h');
+            const dataTotal = horasOrdenadas.map(h => (horaMap.get(h) || { total: 0 }).total);
+            const dataAnalisado = horasOrdenadas.map(h => (horaMap.get(h) || { sim: 0 }).sim);
+            // horas abaixo da meta (30%) — essas barras "Analisadas" pulsam em vermelho
+            const belowTargetHora = horasOrdenadas.map((h, i) => dataTotal[i] > 0 && (dataAnalisado[i] / dataTotal[i] * 100) < meta);
+
+            let labHoraPulseOn = false;
+            const corAnalisadoBar = (i) => belowTargetHora[i] ? (labHoraPulseOn ? '#ef4444' : '#b91c1c') : '#22c55e';
+            const analisadoColorsIniciais = horasOrdenadas.map((h, i) => corAnalisadoBar(i));
+
+            charts['lab-hora-chart'] = new Chart(chartCanvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: labelsHora,
+                    datasets: [
+                        {
+                            label: 'Cargas',
+                            data: dataTotal,
+                            backgroundColor: '#94a3b8',
+                            borderRadius: 4,
+                            barPercentage: 0.75,
+                            categoryPercentage: 0.8
+                        },
+                        {
+                            label: 'Analisadas',
+                            data: dataAnalisado,
+                            backgroundColor: analisadoColorsIniciais,
+                            borderRadius: 4,
+                            barPercentage: 0.75,
+                            categoryPercentage: 0.8
+                        }
+                    ]
+                },
+                plugins: [ChartDataLabels],
+                options: {
+                    indexAxis: 'y',
+                    maintainAspectRatio: false,
+                    animation: { duration: 700 },
+                    layout: { padding: { right: 34 } },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            grid: { color: getToken('--chart-grid', '#e2e8f0') },
+                            ticks: { precision: 0, font: { size: 11 } }
+                        },
+                        y: {
+                            grid: { display: false },
+                            ticks: { font: { size: 12, weight: '700' } }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { boxWidth: 10, font: { size: 11, weight: '700' } } },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => ` ${ctx.dataset.label}: ${ctx.raw}`
+                            }
+                        },
+                        datalabels: {
+                            display: (ctx) => ctx.dataset.data[ctx.dataIndex] > 0,
+                            formatter: (val) => val,
+                            anchor: 'end',
+                            align: 'right',
+                            offset: 4,
+                            clamp: true,
+                            clip: false,
+                            color: (ctx) => (ctx.datasetIndex === 1 && belowTargetHora[ctx.dataIndex]) ? '#ef4444' : getToken('--chart-text', '#1e293b'),
+                            font: (ctx) => ({ weight: '800', size: 11, style: (ctx.datasetIndex === 1 && belowTargetHora[ctx.dataIndex]) ? 'italic' : 'normal' })
+                        }
+                    }
+                }
+            });
+
+            // pulsação vermelha nas horas abaixo da meta de 30%
+            if (belowTargetHora.some(b => b)) {
+                labHoraPulseInterval = setInterval(() => {
+                    const chart = charts['lab-hora-chart'];
+                    if (!chart) { clearInterval(labHoraPulseInterval); labHoraPulseInterval = null; return; }
+                    labHoraPulseOn = !labHoraPulseOn;
+                    chart.data.datasets[1].backgroundColor = horasOrdenadas.map((h, i) => corAnalisadoBar(i));
+                    chart.update('none');
+                }, 500);
+            }
+        }
+        // ═══════════════════════════════════════════════════════════════
+
+        // Paleta cíclica para categorias de "Tipo Carga" além de RODOTREM/TREMINHÃO/ROMEU E JULIETA
+        const SUBTIPO_PALETA_EXTRA = [
+            '#ea580c', '#be185d', '#0f766e', '#b45309', '#1d4ed8', '#6b21a8', '#064e3b', '#9d174d'
+        ];
+        function labelSubtipo(cat) {
+            if (cat === 'rodotrem') return '🚛 RODOTREM';
+            if (cat === 'treminhao') return '🚛 TREMINHÃO';
+            if (cat === 'romeuJulieta') return '🚛 ROMEU E JULIETA';
+            return '🚛 ' + cat;
+        }
+        function corSubtipo(cat, ordemExtra) {
+            if (cat === 'rodotrem') return '#0891b2';
+            if (cat === 'treminhao') return '#7c3aed';
+            if (cat === 'romeuJulieta') return '#c026d3';
+            return SUBTIPO_PALETA_EXTRA[ordemExtra % SUBTIPO_PALETA_EXTRA.length];
+        }
+
+        // Renderiza dinamicamente 1 card por categoria de "Tipo Carga" encontrada nos dados.
+        // Nenhuma categoria nova é somada a outra — cada descrição do relatório vira seu
+        // próprio card, preservando a média/densidade real de cada equipe.
+        function renderSubtipoCards(subtipos) {
+            const gridEl = document.getElementById('subtype-grid-container');
+            if (!gridEl) return;
+            gridEl.innerHTML = '';
+
+            const fixas = ['rodotrem', 'treminhao', 'romeuJulieta'].filter(c => subtipos[c]);
+            const outras = Object.keys(subtipos)
+                .filter(c => c !== 'rodotrem' && c !== 'treminhao' && c !== 'romeuJulieta')
+                .sort((a, b) => subtipos[b].tons - subtipos[a].tons);
+            const ordem = [...fixas, ...outras];
+
+            if (!ordem.length) {
+                gridEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:#94a3b8;font-size:12px;font-weight:700;">⏳ Nenhum registro classificado por Tipo Carga no período.</div>';
+                return;
+            }
+
+            let extraIdx = 0;
+            ordem.forEach(cat => {
+                const g = subtipos[cat];
+                const dens = g.viagens > 0 ? g.tons / g.viagens : 0;
+                const msg = getDensidadeMensagem(dens, g.viagens);
+                const cor = corSubtipo(cat, extraIdx);
+                if (cat !== 'rodotrem' && cat !== 'treminhao' && cat !== 'romeuJulieta') extraIdx++;
+
+                const card = document.createElement('div');
+                card.className = 'kpi-card ' + msg.class;
+                card.style.borderBottomColor = cor;
+                card.innerHTML = `
+                    <small>${labelSubtipo(cat)}</small>
+                    <span class="val" style="color:${cor};">${fmtT(g.tons)}</span>
+                    <div class="kpi-mini-row" style="margin-top: 10px; grid-template-columns: 1fr 1fr;">
+                        <div><small>VIAGENS</small>
+                            <div style="font-size: 1.2rem; font-weight: 800;">${g.viagens}</div>
+                        </div>
+                        <div><small>DENSIDADE</small>
+                            <div style="font-size: 1.2rem; font-weight: 800;">${dens.toFixed(2).replace('.', ',')}</div>
+                        </div>
+                    </div>
+                    <div class="density-info">${msg.mensagem}</div>
+                `;
+                gridEl.appendChild(card);
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  PROJEÇÃO MOAGEM — mmh (média moagem/hora) x horas fechadas
+        //  Ciclo agrícola: 06:00 → 05:59. As "horas fechadas" são
+        //  calculadas a partir do horário atual do sistema, considerando
+        //  APENAS as horas que já foram completamente concluídas.
+        //  Se for antes das 6h, o dia agrícola ainda é o dia anterior
+        //  e todas as horas do ciclo anterior (06→23) estão fechadas.
+        //  Se for depois das 6h, conta as horas de 06 até horaAtual-1.
+        //  Horas 00-05 só contam se já tivermos passado das 6h.
+        // ═══════════════════════════════════════════════════════════════
+        const HORAS_CICLO = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5];
+
+        function getHorasFechadas() {
+            const dados = selectedDay === 'TODOS' ? horariaRaw : horariaRaw.filter(d => d.dia === selectedDay);
+            if (!dados.length) return 0;
+
+            // Pega a hora atual do sistema
+            const agora = new Date();
+            const horaAtual = agora.getHours();
+
+            // Encontra o maior índice de hora que está dentro do limite
+            let maxIdx = -1;
+            dados.forEach(d => {
+                const idx = HORAS_CICLO.indexOf(d.hora);
+                if (idx >= 0) {
+                    if (horaAtual < 6) {
+                        // Antes das 6h: considera o ciclo do dia anterior
+                        // Horas 06→23 estão fechadas (índices 0→17)
+                        if (idx <= 17) {
+                            if (idx > maxIdx) maxIdx = idx;
+                        }
+                        // Horas 00→05 do dia atual ainda não aconteceram
+                    } else {
+                        // Depois das 6h: horas 06 até horaAtual-1
+                        const horaCiclo = HORAS_CICLO[idx];
+                        // Horas 06→23: contam se <= horaAtual-1
+                        if (horaCiclo >= 6 && horaCiclo < horaAtual) {
+                            if (idx > maxIdx) maxIdx = idx;
+                        }
+                        // Horas 00→05: contam somente se já passamos das 6h (dia virou)
+                        if (horaCiclo >= 0 && horaCiclo <= 5 && horaAtual > 5) {
+                            if (idx > maxIdx) maxIdx = idx;
+                        }
+                    }
+                }
+            });
+
+            if (maxIdx < 0) return 0;
+
+            // O próprio slot com o maior índice já tem registro lançado → conta como fechada também
+            return maxIdx + 1;
+        }
+
+        // Total agregado (todas as frentes) por slot de hora do ciclo 06:00→05:59
+        function getTotalPorHoraArray() {
+            const dados = selectedDay === 'TODOS' ? horariaRaw : horariaRaw.filter(d => d.dia === selectedDay);
+            const arr = new Array(24).fill(0);
+            dados.forEach(d => {
+                const idx = HORAS_CICLO.indexOf(d.hora);
+                if (idx >= 0) arr[idx] += d.peso;
+            });
+            return arr;
+        }
+
+        // Média das HORAS ATIVAS (fechadas E com moagem > 0). Horas fechadas
+        // com valor 0 (parada/manutenção) são ignoradas na soma e na
+        // contagem, para não puxar a taxa média para baixo por causa de
+        // paradas already conhecidas — a taxa reflete o ritmo real de
+        // quando a moagem está de fato rodando.
+        function getMediaHorasAtivas() {
+            const horasFechadas = getHorasFechadas();
+            if (horasFechadas <= 0) return { media: 0, qtdAtivas: 0 };
+
+            const totalPorHora = getTotalPorHoraArray();
+            const upperIdx = horasFechadas === 24 ? 23 : horasFechadas - 1;
+
+            let soma = 0, qtdAtivas = 0;
+            for (let i = 0; i <= upperIdx; i++) {
+                if (totalPorHora[i] > 0) {
+                    soma += totalPorHora[i];
+                    qtdAtivas++;
+                }
+            }
+            return { media: qtdAtivas > 0 ? soma / qtdAtivas : 0, qtdAtivas };
+        }
+
+        function calcProjecaoMoagem() {
+            // MMH = soma das horas de moagem que não forem 0, dividida pela
+            // quantidade de horas ATIVAS (horas fechadas com moagem > 0).
+            // Projeção = MMH x 24 (ciclo completo), com piso de sanidade no
+            // total já realmente acumulado nas horas fechadas.
+            const horasFechadas = getHorasFechadas();
+            const { media, qtdAtivas } = getMediaHorasAtivas();
+            const mmh = media;
+
+            const totalPorHora = getTotalPorHoraArray();
+            const upperIdx = horasFechadas === 24 ? 23 : horasFechadas - 1;
+            let totalAcumulado = 0;
+            for (let i = 0; i <= upperIdx && i < 24; i++) totalAcumulado += totalPorHora[i];
+
+            if (horasFechadas >= 24) {
+                // Ciclo fechado por completo: a projeção É o total real, ponto final.
+                return { mmh, qtdHoras: qtdAtivas, projecao: totalAcumulado, horasRestantes: 0, fechado: true };
+            }
+
+            const horasRestantes = 24 - horasFechadas;
+            const projecaoBruta = mmh * 24;
+            // Piso de sanidade: uma projeção nunca pode ser < que o que já foi colhido de fato.
+            const projecao = Math.max(projecaoBruta, totalAcumulado);
+            return { mmh, qtdHoras: qtdAtivas, projecao, horasRestantes, fechado: false };
+        }
+
+        function updateProjecaoMoagem() {
+            const { mmh, qtdHoras, projecao, horasRestantes, fechado } = calcProjecaoMoagem();
+            const infoTxt = qtdHoras > 0
+                ? (fechado
+                    ? `Ciclo fechado (24h) — projeção = total real acumulado`
+                    : `MMH: ${mmh.toFixed(2).replace('.', ',')} t/h (soma horas ativas ÷ ${qtdHoras}h ativas) × 24h`)
+                : 'Aguardando 1ª hora fechada';
+
+            const valCampoProj = document.getElementById('val-campo-projecao');
+            if (valCampoProj) valCampoProj.innerText = fmtT(projecao);
+            const infoCampo = document.getElementById('val-campo-projecao-info');
+            if (infoCampo) infoCampo.innerText = infoTxt;
+
+            const valTranspProj = document.getElementById('val-transp-projecao');
+            if (valTranspProj) valTranspProj.innerText = fmtT(projecao);
+            const infoTransp = document.getElementById('val-transp-projecao-info');
+            if (infoTransp) infoTransp.innerText = infoTxt;
+
+            // ── Classificação por Meta Moagem (mesma Meta Moagem/Dia usada em outras abas) ──
+            const cardProj = document.getElementById('card-campo-projecao');
+            if (cardProj) {
+                const dentroMeta = projecao >= metaMoagemDiaria;
+                const proximoMeta = !dentroMeta && projecao >= metaMoagemDiaria * 0.9;
+                if (dentroMeta) {
+                    cardProj.style.background = 'var(--color-bg-surface)';
+                    cardProj.style.borderBottomColor = 'var(--color-success)';
+                    if (valCampoProj) valCampoProj.style.color = 'var(--color-success-text)';
+                } else if (proximoMeta) {
+                    cardProj.style.background = 'var(--color-warning-bg)';
+                    cardProj.style.borderBottomColor = 'var(--color-warning)';
+                    if (valCampoProj) valCampoProj.style.color = 'var(--color-warning-text)';
+                } else {
+                    cardProj.style.background = 'var(--color-danger-bg)';
+                    cardProj.style.borderBottomColor = 'var(--color-danger)';
+                    if (valCampoProj) valCampoProj.style.color = 'var(--color-danger-text)';
+                }
+                if (infoCampo) {
+                    infoCampo.style.color = dentroMeta ? 'var(--color-success-text)' : (proximoMeta ? 'var(--color-warning-text)' : 'var(--color-danger-text)');
+                    infoCampo.innerHTML = infoTxt + `<br>Meta Moagem: ${fmtT(metaMoagemDiaria)} `
+                        + (dentroMeta ? '✅ dentro da meta' : (proximoMeta ? '⚠️ próximo da meta' : '❌ abaixo da meta'));
+                }
+            }
+
+            const cardTranspProj = document.getElementById('card-transp-projecao');
+            if (cardTranspProj) {
+                const dentroMeta = projecao >= metaMoagemDiaria;
+                const proximoMeta = !dentroMeta && projecao >= metaMoagemDiaria * 0.9;
+                if (dentroMeta) {
+                    cardTranspProj.style.background = 'var(--color-bg-surface)';
+                    cardTranspProj.style.borderBottomColor = 'var(--color-success)';
+                    if (valTranspProj) valTranspProj.style.color = 'var(--color-success-text)';
+                } else if (proximoMeta) {
+                    cardTranspProj.style.background = 'var(--color-warning-bg)';
+                    cardTranspProj.style.borderBottomColor = 'var(--color-warning)';
+                    if (valTranspProj) valTranspProj.style.color = 'var(--color-warning-text)';
+                } else {
+                    cardTranspProj.style.background = 'var(--color-danger-bg)';
+                    cardTranspProj.style.borderBottomColor = 'var(--color-danger)';
+                    if (valTranspProj) valTranspProj.style.color = 'var(--color-danger-text)';
+                }
+                if (infoTransp) {
+                    infoTransp.style.color = dentroMeta ? 'var(--color-success-text)' : (proximoMeta ? 'var(--color-warning-text)' : 'var(--color-danger-text)');
+                    infoTransp.innerHTML = infoTxt + `<br>Meta Moagem: ${fmtT(metaMoagemDiaria)} `
+                        + (dentroMeta ? '✅ dentro da meta' : (proximoMeta ? '⚠️ próximo da meta' : '❌ abaixo da meta'));
+                }
+            }
+
+            // Mantém os inputs de Meta Moagem sincronizados com o valor global
+            const inputMetaColheita = document.getElementById('input-meta-moagem-colheita');
+            if (inputMetaColheita && document.activeElement !== inputMetaColheita) {
+                inputMetaColheita.value = metaMoagemDiaria;
+            }
+            const inputMetaTransp = document.getElementById('input-meta-moagem-transp');
+            if (inputMetaTransp && document.activeElement !== inputMetaTransp) {
+                inputMetaTransp.value = metaMoagemDiaria;
+            }
+
+            // ── Média das últimas 3 horas cheias (abaixo do Total Colhido / Acumulado Transportado) ──
+            const media3hTxt = qtdHoras > 0
+                ? `Média ${qtdHoras}h cheia(s): ${fmtT(mmh)}/h`
+                : 'Média 3h cheias: —';
+
+            const media3hEl = document.getElementById('val-campo-media3h');
+            if (media3hEl) media3hEl.innerText = media3hTxt;
+
+            const media3hTranspEl = document.getElementById('val-transp-media3h');
+            if (media3hTranspEl) media3hTranspEl.innerText = media3hTxt;
+        }
+
+        function renderBalance() {
+            if (!balanceLoaded) return;
+            const dados = selectedDay === "TODOS" ? balanceData : balanceData.filter(d => d.dia === selectedDay);
+
+            let k = { p80: 0, p83: 0, tProp: 0, tTerc: 0, vProp: 0, vTerc: 0 };
+            let raioPropArr = [], raioTercArr = [];
+
+            // Mapa dinâmico de categorias de "Tipo Carga": cada descrição nova (ex.: uma
+            // 4ª ou 5ª variante que apareça no relatório) ganha sua própria entrada aqui,
+            // nunca é somada a "rodotrem", "treminhao" ou a qualquer outra categoria.
+            const subtipos = {}; // { categoria: { tons, viagens, raios: [] } }
+            function ensureSubtipo(cat) {
+                if (!subtipos[cat]) subtipos[cat] = { tons: 0, viagens: 0, raios: [] };
+                return subtipos[cat];
+            }
+
+            dados.forEach(d => {
+                if (d.colhProp) k.p80 += d.peso;
+                if (d.colhTerc) k.p83 += d.peso;
+                if (d.camProp) {
+                    k.tProp += d.peso;
+                    k.vProp += 1;
+                    if (d.raio > 0) raioPropArr.push(d.raio);
+
+                    // Classificar pela coluna "Tipo Carga" (categoria própria, nunca somada a outra)
+                    const categoria = d.subtipoProprio || classificarTipoVeiculoProprio(d.tipoCarga);
+                    const grupo = ensureSubtipo(categoria);
+                    grupo.tons += d.peso;
+                    grupo.viagens += 1;
+                    if (d.raio > 0) grupo.raios.push(d.raio);
+                }
+                if (d.camTerc) {
+                    k.tTerc += d.peso;
+                    k.vTerc += 1;
+                    if (d.raio > 0) raioTercArr.push(d.raio);
+                }
+            });
+
+            const totalC = k.p80 + k.p83;
+            const totalT = k.tProp + k.tTerc;
+            lastTotalMoagem = totalT;
+            const pct80 = totalC > 0 ? (k.p80 / totalC * 100) : 0;
+            const pct83 = totalC > 0 ? (k.p83 / totalC * 100) : 0;
+            const pctPT = totalT > 0 ? (k.tProp / totalT * 100) : 0;
+            const pctTT = totalT > 0 ? (k.tTerc / totalT * 100) : 0;
+
+            const densProp = k.vProp > 0 ? k.tProp / k.vProp : 0;
+            const densTerc = k.vTerc > 0 ? k.tTerc / k.vTerc : 0;
+            const densMediaGeral = (totalT > 0 && (k.vProp + k.vTerc) > 0) ? totalT / (k.vProp + k.vTerc) : 0;
+
+            const densPropMsg = getDensidadeMensagem(densProp, k.vProp);
+            const densTercMsg = getDensidadeMensagem(densTerc, k.vTerc);
+            const densMediaMsg = getDensidadeMensagem(densMediaGeral, (k.vProp + k.vTerc));
+
+            const propCard = document.getElementById('prop-card');
+            const tercCard = document.getElementById('terc-card');
+            const densMediaCard = document.getElementById('dens-media-card');
+
+            if (propCard) {
+                propCard.classList.remove('densidade-ruim', 'densidade-mediano', 'densidade-otimo');
+                propCard.classList.add(densPropMsg.class);
+            }
+            if (tercCard) {
+                tercCard.classList.remove('densidade-ruim', 'densidade-mediano', 'densidade-otimo');
+                tercCard.classList.add(densTercMsg.class);
+            }
+            if (densMediaCard) {
+                densMediaCard.classList.remove('densidade-ruim', 'densidade-mediano', 'densidade-otimo');
+                densMediaCard.classList.add(densMediaMsg.class);
+            }
+
+            const bar80 = document.getElementById('bar-80'); if (bar80) { bar80.style.width = pct80 + '%'; bar80.innerText = pct80.toFixed(1) + '%'; bar80.style.backgroundColor = getColorByMeta(pct80, 58); }
+            const bar83 = document.getElementById('bar-83'); if (bar83) { bar83.style.width = pct83 + '%'; bar83.innerText = pct83.toFixed(1) + '%'; bar83.style.backgroundColor = getColorByMeta(pct83, 42); }
+            const barProp = document.getElementById('bar-prop-h'); if (barProp) { barProp.style.width = pctPT + '%'; barProp.innerText = pctPT.toFixed(1) + '%'; barProp.style.backgroundColor = getColorByMeta(pctPT, 60); }
+            const barTerc = document.getElementById('bar-terc-h'); if (barTerc) { barTerc.style.width = pctTT + '%'; barTerc.innerText = pctTT.toFixed(1) + '%'; barTerc.style.backgroundColor = getColorByMeta(pctTT, 40); }
+
+            const txt80 = document.getElementById('txt-80'); if (txt80) txt80.innerText = fmtT(k.p80);
+            const txt83 = document.getElementById('txt-83'); if (txt83) txt83.innerText = fmtT(k.p83);
+            const valf80 = document.getElementById('val-f80'); if (valf80) valf80.innerText = fmtT(k.p80);
+            const valf83 = document.getElementById('val-f83'); if (valf83) valf83.innerText = fmtT(k.p83);
+            const valCampo = document.getElementById('val-campo-total'); if (valCampo) valCampo.innerText = fmtT(totalT);
+
+            const txtProp = document.getElementById('txt-prop-bar'); if (txtProp) txtProp.innerText = fmtT(k.tProp);
+            const txtTerc = document.getElementById('txt-terc-bar'); if (txtTerc) txtTerc.innerText = fmtT(k.tTerc);
+
+            const propComposicao = document.getElementById('prop-composicao');
+            if (propComposicao) {
+                const somaClassificados = Object.values(subtipos).reduce((s, g) => s + g.tons, 0);
+                propComposicao.innerHTML = `Meta🟢: 60% (Classificado por Tipo Carga: ${fmtT(somaClassificados)})`;
+            }
+
+            const valTProp = document.getElementById('val-t-prop'); if (valTProp) valTProp.innerText = fmtT(k.tProp);
+            const valTTerc = document.getElementById('val-t-terc'); if (valTTerc) valTTerc.innerText = fmtT(k.tTerc);
+            const cntVProp = document.getElementById('cnt-v-prop'); if (cntVProp) cntVProp.innerText = k.vProp;
+            const cntVTerc = document.getElementById('cnt-v-terc'); if (cntVTerc) cntVTerc.innerText = k.vTerc;
+            const valTransp = document.getElementById('val-transp-total'); if (valTransp) valTransp.innerText = fmtT(totalT);
+
+            const densPropElem = document.getElementById('dens-prop');
+            if (densPropElem) densPropElem.innerText = densProp.toFixed(2).replace('.', ',') + ' t/viagem';
+
+            const densTercElem = document.getElementById('dens-terc');
+            if (densTercElem) densTercElem.innerText = densTerc.toFixed(2).replace('.', ',') + ' t/viagem';
+
+            const densMediaElem = document.getElementById('dens-media-geral');
+            if (densMediaElem) densMediaElem.innerText = densMediaGeral.toFixed(2).replace('.', ',') + ' t/viagem';
+
+            const densPropInfo = document.getElementById('dens-prop-info');
+            if (densPropInfo) densPropInfo.innerHTML = densPropMsg.mensagem;
+
+            const densTercInfo = document.getElementById('dens-terc-info');
+            if (densTercInfo) densTercInfo.innerHTML = densTercMsg.mensagem;
+
+            const densMediaInfo = document.getElementById('dens-media-info');
+            if (densMediaInfo) densMediaInfo.innerHTML = densMediaMsg.mensagem;
+
+            const raioProp = document.getElementById('raio-prop'); if (raioProp) raioProp.innerText = avg(raioPropArr).toFixed(2).replace('.', ',') + ' km';
+            const raioTerc = document.getElementById('raio-terc'); if (raioTerc) raioTerc.innerText = avg(raioTercArr).toFixed(2).replace('.', ',') + ' km';
+
+            renderSubtipoCards(subtipos);
+
+            renderCOA();
+            renderHorariaChart();
+            renderPermanencia();
+            updateProjecaoMoagem();
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════════════
+        //  renderPermanencia — cards de tempo médio na usina
+        // ═══════════════════════════════════════════════════════════════
+        function renderPermanencia() {
+            if (!balanceLoaded) return;
+
+            const dados = selectedDay === 'TODOS'
+                ? permanenciaData
+                : permanenciaData.filter(d => d.dia === selectedDay);
+
+            const prop = dados.filter(d => d.tipo === 'proprio');
+            const terc = dados.filter(d => d.tipo === 'terceiro');
+
+            function avgMin(arr) {
+                return arr.length ? arr.reduce((s, d) => s + d.durMin, 0) / arr.length : 0;
+            }
+
+            const avgProp = avgMin(prop);
+            const avgTerc = avgMin(terc);
+
+            const elAvgP = document.getElementById('perm-avg-prop');
+            const elAvgT = document.getElementById('perm-avg-terc');
+            const elSubP = document.getElementById('perm-sub-prop');
+            const elSubT = document.getElementById('perm-sub-terc');
+
+            if (elAvgP) elAvgP.textContent = prop.length ? fmtMin(avgProp) : '—';
+            if (elAvgT) elAvgT.textContent = terc.length ? fmtMin(avgTerc) : '—';
+            if (elSubP) elSubP.textContent = `${prop.length} viagem(ns)`;
+            if (elSubT) elSubT.textContent = `${terc.length} viagem(ns)`;
+        }
+
+        function openPermanenciaModal(tipo) {
+            const dados = selectedDay === 'TODOS'
+                ? permanenciaData
+                : permanenciaData.filter(d => d.dia === selectedDay);
+
+            const filtrado = dados
+                .filter(d => d.tipo === tipo)
+                .sort((a, b) => b.durMin - a.durMin)
+                .slice(0, 10);
+
+            function badgeClass(m) {
+                if (m >= 120) return 'alto';
+                if (m >= 75) return 'medio';
+                return 'ok';
+            }
+
+            const titulo = tipo === 'proprio'
+                ? '🟢 Top 10 — Permanência Próprio (mais longos)'
+                : '🟡 Top 10 — Permanência Terceiro (mais longos)';
+
+            const modal = document.getElementById('detail-modal');
+            const title = document.getElementById('modal-title');
+            const body = document.getElementById('modal-body');
+
+            title.textContent = titulo;
+
+            if (!filtrado.length) {
+                body.innerHTML = `<div style="text-align:center;padding:40px;color:#94a3b8;font-weight:700;">Nenhum dado de permanência disponível para o período.</div>`;
+                modal.classList.add('active');
+                return;
+            }
+
+            const rows = filtrado.map((d, i) => {
+                const rank = i + 1;
+                const cls = rank <= 3 ? `rank-${rank}` : 'rank-n';
+                const badge = badgeClass(d.durMin);
+                const dataFmt = d.dia ? d.dia.split('-').reverse().join('/') : '—';
+                return `
+            <tr>
+                <td><span class="top10-rank ${cls}">${rank}</span></td>
+                <td><strong>${d.frota || '—'}</strong></td>
+                <td>${dataFmt}<br><span style="color:#64748b;font-size:10px;">${d.entradaStr} → ${d.saidaStr}</span></td>
+                <td style="font-weight:800;">${d.viagem}</td>
+                <td>${d.codMot || '—'}<br><span style="color:#334155;font-weight:700;">${d.nomeMot || '—'}</span></td>
+                <td><span class="perm-badge ${badge}">${fmtMin(d.durMin)}</span></td>
+            </tr>`;
+            }).join('');
+
+            body.innerHTML = `
+            <div style="overflow-x:auto;">
+                <table class="top10-table">
+                    <thead><tr>
+                        <th>#</th>
+                        <th>Frota</th>
+                        <th>Data / Horário</th>
+                        <th>Viagem</th>
+                        <th>Cód. / Motorista</th>
+                        <th>Permanência</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <div style="margin-top:14px;font-size:10px;color:#94a3b8;font-weight:600;text-align:center;">
+                🟢 OK (&lt;75min) &nbsp;|&nbsp; 🟡 Médio (75–119min) &nbsp;|&nbsp; 🔴 Alto (≥120min)
+            </div>`;
+
+            modal.classList.add('active');
+        }
+        // ═══════════════════════════════════════════════════════════════
+
+        // Filtro de frentes própria / terceira no gráfico horário
+        function toggleFrenteFilter(tipo) {
+            frenteFilter[tipo] = !frenteFilter[tipo];
+
+            const btnProp = document.getElementById('btn-frente-prop');
+            const btnTerc = document.getElementById('btn-frente-terc');
+            const label = document.getElementById('frente-filter-label');
+
+            // Estilos dos botões: ativo = preenchido, inativo = outline
+            if (btnProp) {
+                const on = frenteFilter.propria;
+                btnProp.style.background = on ? 'var(--color-primary)' : 'var(--color-bg-surface)';
+                btnProp.style.color = on ? 'var(--color-text-inverse)' : 'var(--color-primary)';
+                btnProp.style.borderColor = 'var(--color-primary)';
+                btnProp.style.boxShadow = on ? '0 2px 8px rgba(64,128,12,.35)' : 'none';
+            }
+            if (btnTerc) {
+                const on = frenteFilter.terceira;
+                btnTerc.style.background = on ? 'var(--color-secondary)' : 'var(--color-bg-surface)';
+                btnTerc.style.color = on ? 'var(--color-text-inverse)' : 'var(--color-secondary)';
+                btnTerc.style.borderColor = 'var(--color-secondary)';
+                btnTerc.style.boxShadow = on ? '0 2px 8px rgba(233,162,59,.35)' : 'none';
+            }
+
+            // Label de contexto
+            const showP = frenteFilter.propria, showT = frenteFilter.terceira;
+            if (label) {
+                if (!showP && !showT) label.textContent = 'Exibindo todas as frentes';
+                else if (showP && showT) label.textContent = 'Exibindo todas as frentes';
+                else if (showP) label.textContent = 'Frentes: 08, 10, 11, 12, 13, 14, 15';
+                else label.textContent = 'Frentes: F30, 33, 35, 38, 39';
+            }
+
+            renderHorariaChart();
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  renderHorariaChart — barras empilhadas: cana por hora / frente
+        // ═══════════════════════════════════════════════════════════════
+        function renderHorariaChart() {
+            if (!balanceLoaded) return;
+
+            const wrap = document.getElementById('horaria-chart-wrap');
+            const noData = document.getElementById('horaria-no-data');
+            const canvas = document.getElementById('horaria-chart-canvas');
+            if (!canvas) return;
+
+            // Filtra por dia selecionado
+            const dados = selectedDay === 'TODOS'
+                ? horariaRaw
+                : horariaRaw.filter(d => d.dia === selectedDay);
+
+            if (!dados.length) {
+                if (wrap) wrap.style.display = 'none';
+                if (noData) noData.style.display = 'block';
+                if (charts['horaria']) { charts['horaria'].destroy(); delete charts['horaria']; }
+                return;
+            }
+            if (wrap) wrap.style.display = 'block';
+            if (noData) noData.style.display = 'none';
+
+            // Eixo X: 24 slots, 06:00 → 05:00 (manhã seguinte)
+            const HORAS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5];
+            const LABELS = HORAS.map(h => String(h).padStart(2, '0') + ':00');
+
+            // Conjuntos de frentes por tipo (globais — ver FRENTES_PROPRIA / FRENTES_TERCEIRA no topo do script)
+
+            // Decide quais frentes mostrar com base no filtro
+            const showProp = frenteFilter.propria;
+            const showTerc = frenteFilter.terceira;
+            const mostrarTudo = (!showProp && !showTerc) || (showProp && showTerc);
+
+            // Frentes ordenadas + filtradas
+            const frentes = [...new Set(dados.map(d => d.frente))].sort((a, b) => {
+                const na = parseInt(a.replace('Frente', '')) || 0;
+                const nb = parseInt(b.replace('Frente', '')) || 0;
+                return na - nb;
+            }).filter(f => {
+                if (mostrarTudo) return true;
+                if (showProp && FRENTES_PROPRIA.has(f)) return true;
+                if (showTerc && FRENTES_TERCEIRA.has(f)) return true;
+                return false;
+            });
+
+            // Paleta de cores harmoniosa com a página
+            const PALETTE = [
+                '#40800c', '#3b82f6', '#f59e0b', '#8b5cf6', '#06b6d4',
+                '#ec4899', '#84cc16', '#f97316', '#14b8a6', '#e11d48',
+                '#0891b2', '#a855f7', '#65a30d', '#dc2626', '#0369a1'
+            ];
+
+            // Agrega: mesmo hora/frente de vários dias somados
+            const agg = new Map(); // 'hora|frente' → peso
+            dados.forEach(d => {
+                const k = `${d.hora}|${d.frente}`;
+                agg.set(k, (agg.get(k) || 0) + d.peso);
+            });
+
+            // Total por hora (para referência nos tooltips)
+            const totalPorHora = new Array(24).fill(0);
+            HORAS.forEach((h, i) => {
+                frentes.forEach(f => {
+                    totalPorHora[i] += agg.get(`${h}|${f}`) || 0;
+                });
+            });
+
+            // Datasets — uma série por frente
+            const datasets = frentes.map((frente, idx) => {
+                const cor = PALETTE[idx % PALETTE.length];
+                return {
+                    label: frente,
+                    data: HORAS.map(h => {
+                        const v = agg.get(`${h}|${frente}`) || 0;
+                        return v > 0 ? parseFloat(v.toFixed(3)) : 0;
+                    }),
+                    backgroundColor: cor,
+                    hoverBackgroundColor: cor + 'cc',
+                    borderRadius: { topLeft: 2, topRight: 2 },
+                    borderSkipped: false,
+                    borderWidth: 0
+                };
+            });
+
+            if (charts['horaria']) { charts['horaria'].destroy(); delete charts['horaria']; }
+
+            // Plugin inline: desenha o total em destaque acima de cada barra
+            const totaisPlugin = {
+                id: 'stackTotals',
+                afterDatasetsDraw(chart) {
+                    const { ctx, scales: { x, y } } = chart;
+                    const escuro = document.documentElement.getAttribute('data-theme') === 'dark';
+                    ctx.save();
+                    ctx.font = '800 11px "Plus Jakarta Sans", "Segoe UI", sans-serif';
+                    ctx.fillStyle = escuro ? '#5cb82f' : '#40800c';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    HORAS.forEach((_, i) => {
+                        const tot = totalPorHora[i];
+                        if (!(tot > 0)) return;
+                        const xPx = x.getPixelForValue(i);
+                        const yPx = y.getPixelForValue(tot);
+                        // contorno sólido (não borrado) para legibilidade sobre as barras coloridas
+                        ctx.lineWidth = 3;
+                        ctx.strokeStyle = escuro ? 'rgba(11,15,20,0.9)' : 'rgba(255,255,255,0.9)';
+                        ctx.lineJoin = 'round';
+                        ctx.shadowBlur = 0;
+                        const texto = tot.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ' t';
+                        ctx.strokeText(texto, xPx, yPx - 5);
+                        ctx.fillText(texto, xPx, yPx - 5);
+                    });
+                    ctx.restore();
+                }
+            };
+
+            charts['horaria'] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: { labels: LABELS, datasets },
+                plugins: [totaisPlugin],
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 50 } }, // espaço ajustado para não cortar rótulos/título
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: {
+                            stacked: true,
+                            grid: { display: false },
+                            border: { color: getToken('--chart-border', '#e2e8f0') },
+                            ticks: {
+                                font: { size: 10, weight: '700', family: 'Plus Jakarta Sans' },
+                                color: corDeTextoParaGrafico(),
+                                maxRotation: 0
+                            }
+                        },
+                        y: {
+                            stacked: true,
+                            grid: { color: getToken('--chart-grid', '#f1f5f9'), lineWidth: 1 },
+                            border: { color: getToken('--chart-border', '#e2e8f0'), dash: [4, 4] },
+                            ticks: {
+                                font: { size: 10, family: 'Plus Jakarta Sans' },
+                                color: corDeTextoParaGrafico(),
+                                callback: v => v > 0 ? v.toFixed(0) + ' t' : '0'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'bottom',
+                            labels: {
+                                font: { size: 11, weight: '700', family: 'Plus Jakarta Sans' },
+                                color: corDeTextoParaGrafico(),
+                                padding: 18,
+                                usePointStyle: true,
+                                pointStyle: 'rectRounded',
+                                pointStyleWidth: 14
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1e293b',
+                            titleFont: { size: 12, weight: '800' },
+                            bodyFont: { size: 11 },
+                            padding: 12,
+                            callbacks: {
+                                title: items => `🕐 ${items[0].label}`,
+                                afterBody: items => {
+                                    const idx2 = items[0].dataIndex;
+                                    const tot = totalPorHora[idx2];
+                                    return tot > 0
+                                        ? [`─────────────────`, `📦 Total: ${tot.toFixed(3)} t`]
+                                        : [];
+                                },
+                                label: ctx => {
+                                    const v = ctx.parsed.y;
+                                    return v > 0 ? ` ${ctx.dataset.label}: ${v.toFixed(3)} t` : null;
+                                }
+                            }
+                        },
+                        datalabels: {
+                            display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
+                            formatter: v => v.toFixed(0),
+                            color: '#ffffff',
+                            font: { size: 8, weight: '800', family: 'Plus Jakarta Sans' },
+                            anchor: 'center',
+                            align: 'center',
+                            clamp: true,
+                            textShadowColor: 'rgba(0,0,0,0.4)',
+                            textShadowBlur: 3
+                        }
+                    }
+                }
+            });
+        }
+        // ═══════════════════════════════════════════════════════════════
+
+        //  gerarInsightsCoa — alertas automáticos a partir dos dados já carregados:
+        //  frentes abaixo da meta de análise, gargalo de permanência na usina e
+        //  densidade de carregamento abaixo do ideal (Próprio × Terceiro).
+        // ═══════════════════════════════════════════════════════════════
+        function gerarInsightsCoa(dados) {
+            const insights = [];
+
+            // 1) Frentes abaixo da meta de análise COA (30%) — ignora frentes com
+            //    poucas cargas no período (ruído estatístico, <3 cargas)
+            const fMap = new Map();
+            dados.forEach(d => {
+                if (!d.frente) return;
+                if (!fMap.has(d.frente)) fMap.set(d.frente, { total: 0, sim: 0 });
+                const fe = fMap.get(d.frente);
+                fe.total++;
+                if (d.analisado) fe.sim++;
+            });
+            const frentesRuins = Array.from(fMap.entries())
+                .map(([frente, v]) => ({ frente: frente.replace('Frente ', 'F'), pct: v.total > 0 ? v.sim / v.total * 100 : 0, total: v.total }))
+                .filter(f => f.total >= 3 && f.pct < 30)
+                .sort((a, b) => a.pct - b.pct);
+            if (frentesRuins.length > 0) {
+                const listaTxt = frentesRuins.slice(0, 6).map(f => `${f.frente} (${f.pct.toFixed(0)}%)`).join(', ');
+                insights.push({ txt: `⚠️ <strong>${frentesRuins.length} frente(s) abaixo da meta de análise (30%):</strong> ${listaTxt}${frentesRuins.length > 6 ? '…' : ''}`, ok: false });
+            } else if (dados.length > 0) {
+                insights.push({ txt: '✅ Todas as frentes com volume relevante estão dentro da meta de análise (≥30%).', ok: true });
+            }
+
+            // 2) Tempo de permanência na usina — Próprio × Terceiro (indício de gargalo na descarga)
+            const permDados = selectedDay === 'TODOS' ? permanenciaData : permanenciaData.filter(d => d.dia === selectedDay);
+            const permProp = permDados.filter(d => d.tipo === 'proprio');
+            const permTerc = permDados.filter(d => d.tipo === 'terceiro');
+            const avgMinLocal = arr => arr.length ? arr.reduce((s, d) => s + d.durMin, 0) / arr.length : 0;
+            const avgPermProp = avgMinLocal(permProp);
+            const avgPermTerc = avgMinLocal(permTerc);
+            if (permProp.length > 0 && permTerc.length > 0) {
+                const diffMin = Math.abs(avgPermProp - avgPermTerc);
+                if (diffMin >= 10) {
+                    const maisLento = avgPermProp > avgPermTerc ? 'Próprio' : 'Terceiro';
+                    insights.push({ txt: `🕐 <strong>${maisLento}</strong> está passando, em média, ${diffMin.toFixed(0)} min a mais na usina — possível gargalo de fila/descarga penalizando esse grupo.`, ok: false });
+                }
+            }
+
+            // 3) Densidade de carregamento — Próprio × Terceiro (mesmo critério da aba Transporte)
+            const bDados = selectedDay === 'TODOS' ? balanceData : balanceData.filter(d => d.dia === selectedDay);
+            let tProp = 0, vProp = 0, tTerc = 0, vTerc = 0;
+            bDados.forEach(d => {
+                if (d.camProp) { tProp += d.peso; vProp++; }
+                if (d.camTerc) { tTerc += d.peso; vTerc++; }
+            });
+            const densPropIns = vProp > 0 ? tProp / vProp : 0;
+            const densTercIns = vTerc > 0 ? tTerc / vTerc : 0;
+            [{ nome: 'Próprio', dens: densPropIns, v: vProp }, { nome: 'Terceiro', dens: densTercIns, v: vTerc }].forEach(g => {
+                if (g.v > 0 && g.dens <= 65) {
+                    insights.push({ txt: `🚛 Densidade do <strong>${g.nome}</strong> abaixo do ideal (${g.dens.toFixed(2).replace('.', ',')} t/viagem) — carregamentos incompletos geram viagens extras e perda de eficiência.`, ok: false });
+                }
+            });
+
+            if (insights.length === 0) {
+                insights.push({ txt: '✅ Sem alertas no momento — operação dentro dos parâmetros esperados.', ok: true });
+            }
+            return insights;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  renderCOA — Análise COA: % cargas analisadas (SIM vs NÃO)
+        // ═══════════════════════════════════════════════════════════════
+        function renderCOA() {
+            if (!balanceLoaded) return;
+
+            // ── filtrar por dia selecionado ───────────────────────────
+            const dados = selectedDay === "TODOS"
+                ? coaData
+                : coaData.filter(d => d.dia === selectedDay);
+
+            const sim = dados.filter(d => d.analisado).length;
+            const nao = dados.filter(d => !d.analisado).length;
+            const total = dados.length;
+            const pctSim = total > 0 ? (sim / total * 100) : 0;
+
+            // ── atualizar contadores ──────────────────────────────────
+            const elTotal = document.getElementById('coa-total');
+            const elSim = document.getElementById('coa-sim');
+            const elNao = document.getElementById('coa-nao');
+            const elPct = document.getElementById('coa-pct-center');
+            if (elTotal) elTotal.innerText = total;
+            if (elSim) elSim.innerText = sim;
+            if (elNao) elNao.innerText = nao;
+            if (elPct) {
+                const arrow = total > 0 ? (pctSim >= 30 ? ' ⬆️' : ' ⬇️') : '';
+                elPct.innerText = pctSim.toFixed(1) + '%' + arrow;
+            }
+
+            // ── badge de meta (≥30% = bom, <30% = ruim) ─────────────
+            const badge = document.getElementById('coa-status-badge');
+            if (badge) {
+                const meta = 30;
+                if (total === 0) {
+                    badge.className = 'coa-meta-badge coa-meta-ruim';
+                    badge.innerHTML = '⚠️ Sem dados de análise COA para o período.';
+                } else if (pctSim >= meta) {
+                    badge.className = 'coa-meta-badge coa-meta-bom';
+                    badge.innerHTML = `✅ ${pctSim.toFixed(1)}% das cargas analisadas — <strong>ACIMA DA META (≥ 30%)</strong>`;
+                } else {
+                    badge.className = 'coa-meta-badge coa-meta-ruim';
+                    badge.innerHTML = `⚠️ ${pctSim.toFixed(1)}% das cargas analisadas — <strong>ABAIXO DA META (&lt; 30%)</strong> · Faltam ${(meta - pctSim).toFixed(1)} p.p.`;
+                }
+            }
+
+            // ── atualizar legenda ─────────────────────────────────────
+            const dotSim = document.getElementById('coa-dot-sim');
+            const simColor = pctSim >= 30 ? '#22c55e' : '#ef4444';
+            if (dotSim) dotSim.style.background = simColor;
+            const elLSim = document.getElementById('coa-legend-sim');
+            const elLNao = document.getElementById('coa-legend-nao');
+            if (elLSim) elLSim.innerText = `SIM (${sim})`;
+            if (elLNao) elLNao.innerText = `NÃO (${nao})`;
+
+            // ── cobertura de análise COA por grupo de frente (Própria × Terceira) ──
+            // Responde: estamos analisando proporcionalmente mais cana na frente própria ou na terceira?
+            const propGroup = dados.filter(d => d.frente && FRENTES_PROPRIA.has(d.frente));
+            const tercGroup = dados.filter(d => d.frente && FRENTES_TERCEIRA.has(d.frente));
+            const propSim = propGroup.filter(d => d.analisado).length;
+            const tercSim = tercGroup.filter(d => d.analisado).length;
+            const pctPropGroup = propGroup.length > 0 ? (propSim / propGroup.length * 100) : 0;
+            const pctTercGroup = tercGroup.length > 0 ? (tercSim / tercGroup.length * 100) : 0;
+            const metaGrupo = 30;
+
+            const coaPropBar = document.getElementById('coa-bar-prop');
+            const coaTercBar = document.getElementById('coa-bar-terc');
+            const coaPropTxt = document.getElementById('coa-txt-prop');
+            const coaTercTxt = document.getElementById('coa-txt-terc');
+            const coaPropComp = document.getElementById('coa-prop-composicao');
+            const coaTercComp = document.getElementById('coa-terc-composicao');
+
+            if (coaPropBar) {
+                coaPropBar.style.width = Math.min(100, pctPropGroup).toFixed(1) + '%';
+                coaPropBar.innerText = pctPropGroup.toFixed(1) + '%';
+                coaPropBar.style.background = pctPropGroup >= metaGrupo ? 'var(--color-primary)' : 'var(--color-danger)';
+            }
+            if (coaTercBar) {
+                coaTercBar.style.width = Math.min(100, pctTercGroup).toFixed(1) + '%';
+                coaTercBar.innerText = pctTercGroup.toFixed(1) + '%';
+                coaTercBar.style.background = pctTercGroup >= metaGrupo ? 'var(--color-primary)' : 'var(--color-danger)';
+            }
+            if (coaPropTxt) coaPropTxt.innerText = `${propSim}/${propGroup.length} cargas`;
+            if (coaTercTxt) coaTercTxt.innerText = `${tercSim}/${tercGroup.length} cargas`;
+            if (coaPropComp) coaPropComp.innerHTML = propGroup.length === 0
+                ? 'Sem cargas no período' : (pctPropGroup >= metaGrupo ? '✅ Dentro da meta (≥30%)' : '⚠️ Abaixo da meta (30%)');
+            if (coaTercComp) coaTercComp.innerHTML = tercGroup.length === 0
+                ? 'Sem cargas no período' : (pctTercGroup >= metaGrupo ? '✅ Dentro da meta (≥30%)' : '⚠️ Abaixo da meta (30%)');
+
+            const coaGrupoDestaque = document.getElementById('coa-grupo-destaque');
+            if (coaGrupoDestaque) {
+                if (propGroup.length === 0 && tercGroup.length === 0) {
+                    coaGrupoDestaque.innerHTML = '⏳ Sem cargas classificadas por frente no período.';
+                } else if (pctPropGroup.toFixed(1) === pctTercGroup.toFixed(1)) {
+                    coaGrupoDestaque.innerHTML = '⚖️ Própria e Terceira com cobertura de análise equivalente.';
+                } else {
+                    const liderTxt = pctPropGroup > pctTercGroup ? 'Própria' : 'Terceira';
+                    const diffPP = Math.abs(pctPropGroup - pctTercGroup).toFixed(1);
+                    coaGrupoDestaque.innerHTML = `🔎 Estamos analisando proporcionalmente mais cana na frente <strong>${liderTxt}</strong> (+${diffPP} p.p.).`;
+                }
+            }
+
+            // Nota: Total geral conta TODAS as frentes; os dois grupos acima só cobrem
+            // as frentes definidas como Própria/Terceira — por isso a soma dos dois
+            // grupos normalmente não bate com o Total (cargas sem frente, ou de
+            // frentes fora dessas duas listas, entram no Total mas não em nenhum grupo).
+            const outrasFrentesNota = document.getElementById('coa-outras-frentes-nota');
+            if (outrasFrentesNota) {
+                const outras = dados.length - propGroup.length - tercGroup.length;
+                outrasFrentesNota.innerHTML = outras > 0
+                    ? `ℹ️ ${outras} carga(s) de frentes fora dessa classificação (ou sem frente) contam no Total, mas não em nenhum dos dois grupos`
+                    : '';
+            }
+
+            // ── 💡 Insights automáticos (card "Transporte" da aba Balança + aba Lab, abaixo do donut) ──
+            const insightsHtml = gerarInsightsCoa(dados)
+                .map(ins => `<div class="coa-insight-item${ins.ok ? ' coa-insight-ok' : ''}">${ins.txt}</div>`)
+                .join('');
+            const coaInsightsBox = document.getElementById('transp-insights');
+            if (coaInsightsBox) coaInsightsBox.innerHTML = insightsHtml;
+            const labCoaInsightsBox = document.getElementById('lab-coa-insights');
+            if (labCoaInsightsBox) labCoaInsightsBox.innerHTML = insightsHtml;
+
+            // ── gráfico donut COA ─────────────────────────────────────
+            const canvas = document.getElementById('coa-donut-canvas');
+            if (!canvas) return;
+            if (charts['coa-donut']) { charts['coa-donut'].destroy(); delete charts['coa-donut']; }
+
+            const chartData = total > 0 ? [sim, nao] : [0, 1];
+            const bgColors = total > 0 ? [simColor, '#94a3b8'] : ['#cbd5e1', '#f1f5f9'];
+            const chartLabels = ['Analisado (SIM)', 'Não Analisado (NÃO)'];
+
+            charts['coa-donut'] = new Chart(canvas.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: chartLabels,
+                    datasets: [{
+                        data: chartData,
+                        backgroundColor: bgColors,
+                        borderWidth: 3,
+                        borderColor: getToken('--color-bg-surface', '#ffffff')
+                    }]
+                },
+                options: {
+                    cutout: '60%',
+                    maintainAspectRatio: false,
+                    animation: { duration: 600 },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    const val = ctx.raw;
+                                    const pct = total > 0 ? (val / total * 100).toFixed(1) : '0.0';
+                                    return ` ${ctx.label}: ${val} (${pct}%)`;
+                                }
+                            }
+                        },
+                        datalabels: {
+                            display: (ctx) => ctx.dataset.data[ctx.dataIndex] > 0 && total > 0,
+                            formatter: (val) => {
+                                const p = (val / total * 100).toFixed(1);
+                                return p + '%';
+                            },
+                            color: corDeTextoParaGrafico(),
+                            font: { weight: '800', size: 12 },
+                            anchor: 'center',
+                            align: 'center'
+                        }
+                    }
+                }
+            });
+
+            // ── gráfico de corrida: % analisado por frente (08 → 39) ──
+            const raceCanvas = document.getElementById('coa-frente-race-canvas');
+            if (!raceCanvas) return;
+            if (charts['coa-frente-race']) { charts['coa-frente-race'].destroy(); delete charts['coa-frente-race']; }
+
+            const frenteMap = new Map();
+            dados.forEach(d => {
+                if (!d.frente) return;
+                if (!frenteMap.has(d.frente)) frenteMap.set(d.frente, { total: 0, sim: 0 });
+                const fe = frenteMap.get(d.frente);
+                fe.total++;
+                if (d.analisado) fe.sim++;
+            });
+
+            const frenteStats = Array.from(frenteMap.entries())
+                .map(([frente, v]) => ({
+                    frente,
+                    num: parseInt(frente.replace('Frente', '').trim()) || 0,
+                    pct: v.total > 0 ? (v.sim / v.total * 100) : 0,
+                    total: v.total,
+                    sim: v.sim
+                }))
+                .sort((a, b) => a.num - b.num);
+
+            const metaFrente = 30;
+            const raceLabels = frenteStats.map(f => f.frente.replace('Frente ', 'F'));
+            const raceData = frenteStats.map(f => f.pct);
+            const raceColors = frenteStats.map(f => f.pct >= metaFrente ? '#22c55e' : '#ef4444');
+
+            charts['coa-frente-race'] = new Chart(raceCanvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: raceLabels,
+                    datasets: [{
+                        label: '% Analisado',
+                        data: raceData,
+                        backgroundColor: raceColors,
+                        borderRadius: 5,
+                        barPercentage: 0.85,
+                        categoryPercentage: 0.9
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    maintainAspectRatio: false,
+                    animation: { duration: 900, easing: 'easeOutQuart' },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            max: Math.max(100, ...raceData) + 5,
+                            grid: { color: getToken('--chart-grid', '#e2e8f0') },
+                            ticks: { callback: (v) => v + '%', font: { size: 9 } }
+                        },
+                        y: {
+                            grid: { display: false },
+                            ticks: { font: { weight: '700', size: 9 } }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    const f = frenteStats[ctx.dataIndex];
+                                    return ` ${f.frente}: ${f.pct.toFixed(1)}% (${f.sim}/${f.total} cargas)`;
+                                }
+                            }
+                        },
+                        datalabels: {
+                            display: (ctx) => raceData[ctx.dataIndex] > 0,
+                            formatter: (val) => val.toFixed(1) + '%',
+                            color: corDeTextoParaGrafico(),
+                            font: { weight: '800', size: 12 },
+                            anchor: 'end',
+                            align: 'right'
+                        }
+                    }
+                }
+            });
+        }
+        // ═══════════════════════════════════════════════════════════════
+
+        //  toggleCoaFlip — duplo clique alterna entre donut e corrida por frente
+        function toggleCoaFlip() {
+            const container = document.getElementById('coa-flip-container');
+            const title = document.getElementById('coa-flip-title');
+            const viewDonut = document.getElementById('coa-view-donut');
+            const viewRace = document.getElementById('coa-view-race');
+            if (!container || !viewDonut || !viewRace) return;
+
+            container.classList.add('coa-spinning');
+
+            setTimeout(() => {
+                coaShowingRace = !coaShowingRace;
+                viewDonut.style.display = coaShowingRace ? 'none' : '';
+                viewRace.style.display = coaShowingRace ? '' : 'none';
+                if (title) title.textContent = coaShowingRace
+                    ? '🏁 % Análise por Frente (08 → 39)'
+                    : 'Percentual Analisado';
+
+                // canvas estava oculto (display:none) durante a criação — precisa
+                // recalcular o tamanho agora que o container ficou visível
+                if (coaShowingRace && charts['coa-frente-race']) {
+                    requestAnimationFrame(() => charts['coa-frente-race'].resize());
+                }
+                if (!coaShowingRace && charts['coa-donut']) {
+                    requestAnimationFrame(() => charts['coa-donut'].resize());
+                }
+            }, 300);
+
+            setTimeout(() => container.classList.remove('coa-spinning'), 620);
+        }
+
+        function processSolinftecData(rows) {
+            solinftecData = { frentes: {}, totais: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0 } };
+            solinftecPeriodo = '';
+
+            if (Array.isArray(rows) && rows.length) {
+                // Pesquisa nas primeiras 15 linhas (onde costuma estar o cabeçalho do GAtec)
+                const txt = JSON.stringify(rows.slice(0, 15));
+                const m = txt.match(/Periodo:\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4})\s+[0-9]{1,2}:[0-9]{2}\s+a\s+([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4})/);
+                if (m) solinftecPeriodo = m[1] + ' a ' + m[2];
+            }
+
+            rows.forEach(row => {
+                let frente = String(row.Frente || 'N/A').trim();
+                if (frente === 'TRANSBORDOS - TERCEIROS') return;
+                const opCode = String(row.Operação || '').trim();
+                const descOp = String(row['Descrição da Operação'] || '').trim();
+                const seg = parseInt(row.Segundos) || 0;
+                const hrs = seg / 3600;
+                const frotaNome = String(row.Frota || '').trim();
+                const prefixo = frotaNome.substring(0, 2);
+                if (hrs <= 0 || frente === 'N/A' || frente.includes('RESERVA')) return;
+                let cat = null;
+                if (OP_PRODUTIVO.includes(opCode)) cat = 'PRODUTIVO';
+                else if (OP_IMPRODUTIVO.includes(opCode)) cat = 'IMPRODUTIVO';
+                else if (OP_MANUTENCAO.includes(opCode)) cat = 'MANUTENCAO';
+                if (!cat) cat = 'OUTROS';
+                solinftecData.totais[cat] += hrs;
+                if (!solinftecData.frentes[frente]) {
+                    solinftecData.frentes[frente] = { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0, OUTROS: 0, total: 0, gargalos: {}, operacoesDetalhadas: {}, frotas: {}, machines: { COLHEDORA: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0, OUTROS: 0, total: 0, ops: {}, operacoesDetalhadas: {}, frotas: {} }, TRANSBORDO: { PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0, OUTROS: 0, total: 0, ops: {}, operacoesDetalhadas: {}, frotas: {} } } };
+                }
+                let f = solinftecData.frentes[frente];
+                f[cat] += hrs; f.total += hrs;
+                const opName = OP_NAMES[opCode] || descOp;
+                f.operacoesDetalhadas[opName] = (f.operacoesDetalhadas[opName] || 0) + hrs;
+                if (cat !== 'PRODUTIVO') f.gargalos[opName] = (f.gargalos[opName] || 0) + hrs;
+
+                if (!f.frotas[frotaNome]) {
+                    f.frotas[frotaNome] = { nome: frotaNome, PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0, OUTROS: 0, operacoes: {} };
+                }
+                f.frotas[frotaNome][cat] += hrs;
+                f.frotas[frotaNome].operacoes[opName] = (f.frotas[frotaNome].operacoes[opName] || 0) + hrs;
+
+                let tipo = null;
+                if (prefixo === '80' || prefixo === '93') tipo = 'COLHEDORA';
+                else if (prefixo === '92') tipo = 'TRANSBORDO';
+                if (tipo === 'COLHEDORA' || tipo === 'TRANSBORDO') {
+                    let m = f.machines[tipo];
+                    m[cat] += hrs; m.total += hrs;
+                    m.operacoesDetalhadas[opName] = (m.operacoesDetalhadas[opName] || 0) + hrs;
+                    if (cat !== 'PRODUTIVO') m.ops[opName] = (m.ops[opName] || 0) + hrs;
+                    if (!m.frotas[frotaNome]) {
+                        m.frotas[frotaNome] = { nome: frotaNome, PRODUTIVO: 0, IMPRODUTIVO: 0, MANUTENCAO: 0, operacoes: {} };
+                    }
+                    m.frotas[frotaNome][cat] += hrs;
+                    m.frotas[frotaNome].operacoes[opName] = (m.frotas[frotaNome].operacoes[opName] || 0) + hrs;
+                }
+            });
+            solinftecLoaded = true;
+            const btnSafra = document.getElementById('consumo-btn-safra');
+            const infoSafra = document.getElementById('consumo-safra-info');
+
+            if (btnSafra && solinftecPeriodo && typeof consumoAtualizarPeriodoSafra !== 'function') {
+                // Coloca a data à esquerda no botão quando o módulo CONSUMO ainda não estiver carregado
+                btnSafra.innerHTML = `📅 <strong>${solinftecPeriodo}</strong> · SAFRA COMPLETA`;
+                if (infoSafra) infoSafra.innerHTML = '📅 Período do Relatório: <strong>' + solinftecPeriodo + '</strong> — Dados consolidados de toda a safra.';
+            }
+            if (typeof consumoAtualizarPeriodoSafra === 'function') consumoAtualizarPeriodoSafra();
+            renderSolinftec();
+            updateStatus();
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  REL. PRODUÇÃO — Potencial.xlsx (aba "Planilha1")
+        //  Colunas: Hora Escalar | Hora fixa | HORA | DISP COLHEDORA |
+        //  DISP TRANSBORDO | DISP CAMINHÕES | Potencial | Caminhões Ida |
+        //  Caminhões Campo | Caminhões Volta | Caminhões Fila externa |
+        //  Caminhões Descarga | Caminhões PARADO | CARRETAS CARREGADAS |
+        //  ROTAÇÃO DA MOENDA. Só as horas realmente preenchidas entram —
+        //  o restante do dia ainda não aconteceu / não foi lançado.
+        // ═══════════════════════════════════════════════════════════════
+        function processPotencialData(rows) {
+            try {
+                potencialData = {};
+                potencialLoaded = false;
+                if (!rows || rows.length < 2) return;
+                const headers = rows[0].map(h => normalize(h));
+                const idx = {
+                    horaFixa: headers.findIndex(h => h.includes('HORA') && h.includes('FIXA')),
+                    dispColh: headers.findIndex(h => h.includes('DISP') && h.includes('COLHED')),
+                    dispTransb: headers.findIndex(h => h.includes('DISP') && h.includes('TRANSB')),
+                    dispCam: headers.findIndex(h => h.includes('DISP') && h.includes('CAMINH')),
+                    potencial: headers.findIndex(h => h === 'POTENCIAL'),
+                    ida: headers.findIndex(h => h.includes('CAMINH') && h.includes('IDA')),
+                    campo: headers.findIndex(h => h.includes('CAMINH') && h.includes('CAMPO')),
+                    volta: headers.findIndex(h => h.includes('CAMINH') && h.includes('VOLTA')),
+                    filaExt: headers.findIndex(h => h.includes('CAMINH') && h.includes('FILA')),
+                    descarga: headers.findIndex(h => h.includes('CAMINH') && h.includes('DESCARGA')),
+                    parado: headers.findIndex(h => h.includes('CAMINH') && h.includes('PARADO')),
+                    carretas: headers.findIndex(h => h.includes('CARRETAS')),
+                    rpm: headers.findIndex(h => h.includes('ROTA') && h.includes('MOENDA'))
+                };
+                if (idx.horaFixa < 0 || idx.dispColh < 0) return; // aba/colunas não reconhecidas
+
+                const val = (r, i) => i >= 0 ? parseNum(r[i]) : null;
+                for (let i = 1; i < rows.length; i++) {
+                    const r = rows[i];
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const hora = parseInt(String(r[idx.horaFixa]).trim());
+                    if (isNaN(hora)) continue;
+                    // Gatilho de "hora preenchida" = coluna Caminhões Ida, porque colunas
+                    // calculadas (Disp./Potencial/RPM) podem já vir prontas para a hora
+                    // seguinte antes do lançamento manual dos status de caminhões.
+                    const idaRaw = idx.ida >= 0 ? r[idx.ida] : '';
+                    if (idaRaw === '' || idaRaw === null || idaRaw === undefined) continue; // hora ainda não preenchida
+                    potencialData[hora] = {
+                        dispColh: val(r, idx.dispColh), dispTransb: val(r, idx.dispTransb), dispCam: val(r, idx.dispCam),
+                        potencial: val(r, idx.potencial),
+                        ida: val(r, idx.ida), campo: val(r, idx.campo), volta: val(r, idx.volta),
+                        filaExt: val(r, idx.filaExt), descarga: val(r, idx.descarga), parado: val(r, idx.parado),
+                        carretas: val(r, idx.carretas), rpm: val(r, idx.rpm)
+                    };
+                }
+                potencialLoaded = Object.keys(potencialData).length > 0;
+            } catch (err) {
+                console.error('[processPotencialData] erro:', err);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  REL. PRODUÇÃO — METAS.xlsx (aba "Planilha1", metas por fazenda)
+        //  Agregado por Frente: Raio Médio = média do Raio ponderada pelo
+        //  Potencial de cada fazenda; Meta 24h = soma da coluna Meta.
+        //  Frentes com sufixo de letra (ex. "13B") são somadas na frente
+        //  base ("13") — confirmado batendo com o relatório em PDF.
+        // ═══════════════════════════════════════════════════════════════
+        function processMetasData(rows) {
+            try {
+                metasPorFrente = [];
+                metasLoaded = false;
+                if (!rows || rows.length < 2) return;
+                const headers = rows[0].map(h => normalize(h));
+                const idx = {
+                    frente: headers.findIndex(h => h === 'FRENTE'),
+                    fa: headers.findIndex(h => h.startsWith('F.A') || h === 'F A'),
+                    raio: headers.findIndex(h => h === 'RAIO'),
+                    potencial: headers.findIndex(h => h === 'POTENCIAL'),
+                    meta: headers.findIndex(h => h.startsWith('META'))
+                };
+                if (idx.frente < 0 || idx.meta < 0) return;
+
+                const porBase = new Map(); // frenteBase → {fa, raioW, pot, meta}
+                for (let i = 1; i < rows.length; i++) {
+                    const r = rows[i];
+                    if (!r || r.every(c => c === '' || c === null)) continue;
+                    const frenteRaw = String(r[idx.frente] || '').trim();
+                    if (!frenteRaw) continue;
+                    const frenteBase = frenteRaw.replace(/[A-Za-z]+$/, ''); // "13B" → "13"
+                    const fa = idx.fa >= 0 ? r[idx.fa] : null;
+                    const raio = parseNum(r[idx.raio]);
+                    const potencial = parseNum(r[idx.potencial]);
+                    const meta = parseNum(r[idx.meta]);
+                    if (!porBase.has(frenteBase)) porBase.set(frenteBase, { fa: null, raioW: 0, pot: 0, meta: 0 });
+                    const a = porBase.get(frenteBase);
+                    if (a.fa === null && fa !== null && fa !== '') a.fa = fa;
+                    a.raioW += raio * potencial;
+                    a.pot += potencial;
+                    a.meta += meta;
+                }
+                metasPorFrente = Array.from(porBase.entries()).map(([frente, a]) => ({
+                    frente,
+                    fa: a.fa,
+                    raioMedio: a.pot > 0 ? a.raioW / a.pot : 0,
+                    meta24h: a.meta
+                })).sort((a, b) => (parseInt(a.frente) || 0) - (parseInt(b.frente) || 0));
+                metasLoaded = metasPorFrente.length > 0;
+
+                // Meta Moagem/Dia padrão = soma da coluna "Meta" do METAS.xlsx.
+                // Toda vez que a planilha é (re)carregada, essa soma vira o novo
+                // padrão em REL. PRODUÇÃO, COLHEDORAS e TRANSPORTE (metaMoagemDiaria
+                // é uma única variável compartilhada, sincronizada via Firestore).
+                // Um ajuste manual feito depois em qualquer uma dessas abas passa a
+                // valer como o padrão vigente até a próxima atualização da planilha.
+                if (metasLoaded) {
+                    const somaMetaColuna = metasPorFrente.reduce((s, f) => s + (f.meta24h || 0), 0);
+                    if (somaMetaColuna > 0) setMetaMoagemDiaria(somaMetaColuna);
+                }
+            } catch (err) {
+                console.error('[processMetasData] erro:', err);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  REL. PRODUÇÃO — junta METAS.xlsx + Potencial.xlsx + Producao.xlsx
+        //  num único relatório, no formato do PDF de referência.
+        // ═══════════════════════════════════════════════════════════════
+        function rpFCode(v) { return String(v || '').replace(/\D/g, '').padStart(2, '0'); }
+
+        function rpDadosDia() {
+            return selectedDay === 'TODOS' ? densidadeRaw : densidadeRaw.filter(d => d.diaAgricola === selectedDay);
+        }
+        function rpCoaDia() {
+            return selectedDay === 'TODOS' ? coaData : coaData.filter(d => d.dia === selectedDay);
+        }
+
+        // Última hora do ciclo (06→23,00→05) com dado preenchido no Potencial.xlsx
+        function rpUltimaHoraPotencial() {
+            const chaves = Object.keys(potencialData).map(Number);
+            if (!chaves.length) return null;
+            let melhor = null, melhorIdx = -1;
+            chaves.forEach(h => {
+                const idx = HORAS_CICLO.indexOf(h);
+                if (idx > melhorIdx) { melhorIdx = idx; melhor = h; }
+            });
+            return melhor;
+        }
+
+        function rpCalcPorFrente() {
+            const dados = rpDadosDia();
+            const porFrente = new Map(); // "08" → {peso, viagens}
+            dados.forEach(d => {
+                const k = rpFCode(d.fCode);
+                if (!porFrente.has(k)) porFrente.set(k, { peso: 0, viagens: 0 });
+                const a = porFrente.get(k); a.peso += d.peso; a.viagens++;
+            });
+
+            const coaDados = rpCoaDia();
+            const analisePorFrente = new Map();
+            coaDados.forEach(c => {
+                if (!c.frente) return;
+                const k = rpFCode(c.frente.replace('Frente', ''));
+                if (!analisePorFrente.has(k)) analisePorFrente.set(k, { sim: 0, total: 0 });
+                const a = analisePorFrente.get(k); a.total++; if (c.analisado) a.sim++;
+            });
+
+            const horasFechadas = getHorasFechadas();
+
+            return metasPorFrente.map(m => {
+                const k = rpFCode(m.frente);
+                const real = porFrente.get(k) || { peso: 0, viagens: 0 };
+                const an = analisePorFrente.get(k) || { sim: 0, total: 0 };
+                const metaHora = m.meta24h / 24;
+                const planejado = horasFechadas > 0 ? m.meta24h * (horasFechadas / 24) : 0;
+                const diferenca = real.peso - planejado;
+                const densidade = real.viagens > 0 ? real.peso / real.viagens : 0;
+                const analisePct = an.total > 0 ? (an.sim / an.total) * 100 : 0;
+                // Projeção do dia: só extrapola a taxa horária real para as 24h
+                // quando já houver um número mínimo de horas fechadas (3h).
+                // Extrapolar a partir de 1h amplifica qualquer oscilação em até
+                // 24x e gera números "impossíveis" (ex.: 1h de pico vira um dia
+                // inteiro de pico). Com menos de 3h fechadas, a projeção fica
+                // indefinida (null) em vez de mostrar um valor não confiável.
+                const HORAS_MIN_PROJECAO = 3;
+                const projecaoDia = horasFechadas >= HORAS_MIN_PROJECAO ? (real.peso / horasFechadas) * 24 : null;
+                const saldo24h = projecaoDia !== null ? projecaoDia - m.meta24h : null;
+                return {
+                    frente: k, fa: m.fa, raioMedio: m.raioMedio, meta24h: m.meta24h, metaHora,
+                    planejado, realizado: real.peso, diferenca, densidade, viagens: real.viagens,
+                    analisePct, projecaoDia, saldo24h
+                };
+            });
+        }
+
+        function rpCalcTop(campo) {
+            const dados = rpDadosDia();
+            const map = new Map();
+            dados.forEach(d => {
+                const cod = String(d[campo] || '').trim();
+                if (!cod) return;
+                map.set(cod, (map.get(cod) || 0) + d.peso);
+            });
+            return Array.from(map.entries()).map(([cod, peso]) => ({ cod, peso }))
+                .sort((a, b) => b.peso - a.peso).slice(0, 10);
+        }
+
+        // Gráfico de barras comparativo (2 categorias, ex.: Próprio × Terceiro).
+        // Sem borda nas barras (evita o contorno branco herdado do Chart.js no
+        // modo escuro) e com rótulo de valor acima de cada barra via datalabels.
+        function rpChartBarrasComparativo(canvas, { labels, valores, cores, formatarLabel, formatarTooltip }) {
+            return new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        data: valores,
+                        backgroundColor: cores,
+                        borderWidth: 0,
+                        borderRadius: 6,
+                        maxBarThickness: 64
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 22 } },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { display: false }
+                        },
+                        y: {
+                            display: false,
+                            beginAtZero: true,
+                            suggestedMax: Math.max(...valores) * 1.25 || 1
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                usePointStyle: true,
+                                pointStyle: 'circle',
+                                boxWidth: 8,
+                                boxHeight: 8,
+                                padding: 16,
+                                color: corDeTextoParaGrafico(),
+                                generateLabels: (chart) => labels.map((lbl, i) => ({
+                                    text: lbl,
+                                    fillStyle: cores[i],
+                                    strokeStyle: cores[i],
+                                    fontColor: corDeTextoParaGrafico(),
+                                    color: corDeTextoParaGrafico(),
+                                    pointStyle: 'circle',
+                                    hidden: false,
+                                    index: i
+                                }))
+                            }
+                        },
+                        tooltip: {
+                            callbacks: { label: (ctx) => ctx.label + ': ' + formatarTooltip(ctx.parsed.y) }
+                        },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'top',
+                            offset: 4,
+                            color: (ctx) => cores[ctx.dataIndex],
+                            font: { weight: '800', size: 13 },
+                            formatter: (v) => formatarLabel(v)
+                        }
+                    }
+                }
+            });
+        }
+
+        function rpCalcDetalhe() {
+            const dados = rpDadosDia();
+            const map = new Map(); // frente||owner||tipo → {frente,owner,tipo,peso,viagens}
+            dados.forEach(d => {
+                const owner = d.camTerc ? 'Terceiro' : 'Próprio';
+                const k = `${d.frente}||${owner}||${d.tipoNorm}`;
+                if (!map.has(k)) map.set(k, { frente: d.frente, fCode: d.fCode, owner, tipo: d.tipoNorm, peso: 0, viagens: 0 });
+                const a = map.get(k); a.peso += d.peso; a.viagens++;
+            });
+            return Array.from(map.values()).sort((a, b) => {
+                const fa = parseInt(a.fCode) || 0, fb = parseInt(b.fCode) || 0;
+                if (fa !== fb) return fa - fb;
+                return a.owner.localeCompare(b.owner);
+            });
+        }
+
+        function rpFmtNum(v, casas) {
+            return (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+        }
+
+        // Regras de faixa ideal para os indicadores do card "Status de Caminhões"
+        // (Potencial.xlsx, último snapshot). ok=true pinta o card de verde,
+        // ok=false pinta de vermelho. tooltip descreve a regra + valor atual.
+        const RP_STATUS_RULES = {
+            ida: { min: 10, max: 16, label: 'Ida' },
+            campo: { min: 15, max: 20, label: 'Campo' },
+            volta: { min: 10, max: 18, label: 'Volta' },
+            filaExt: { min: 5, max: 10, label: 'Fila Externa' },
+            descarga: { min: 6, max: 20, label: 'Descarga' },
+            carretas: { min: 5, max: 20, label: 'Carretas Carregadas' }
+        };
+        function rpStatusRuleInfo(key, v) {
+            if (v === null || v === undefined || isNaN(v)) return { ok: true, tooltip: 'Sem dado' };
+            if (key === 'parados') {
+                const ok = v <= 6;
+                return { ok, tooltip: `Parados: ${rpFmtNum(v, 0)} · ideal ≤ 5 (tolerância até 6) · acima de 6 = crítico` };
+            }
+            if (key === 'rpm') {
+                const ok = v >= 1101;
+                return { ok, tooltip: `RPM Moenda: ${rpFmtNum(v, 0)} · ideal ≥ 1.101 · abaixo de 1.100 = crítico` };
+            }
+            if (key === 'analisado') {
+                const ok = v >= 30.1;
+                return { ok, tooltip: `Analisado: ${rpFmtNum(v, 1)}% · ideal ≥ 30,1% · abaixo de 30% = crítico` };
+            }
+            const r = RP_STATUS_RULES[key];
+            if (!r) return { ok: true, tooltip: '' };
+            const ok = v >= r.min && v <= r.max;
+            return { ok, tooltip: `${r.label}: ${rpFmtNum(v, 0)} · faixa ideal ${r.min}–${r.max} · fora da faixa = crítico` };
+        }
+
+        function renderRelProducao() {
+            const noData = document.getElementById('relproducao-no-data');
+            const content = document.getElementById('relproducao-content');
+            if (!noData || !content) return;
+
+            if (!balanceLoaded || !metasLoaded) {
+                noData.style.display = 'block';
+                content.style.display = 'none';
+                let faltando = [];
+                if (!balanceLoaded) faltando.push('Producao.xlsx');
+                if (!metasLoaded) faltando.push('METAS.xlsx');
+                noData.innerHTML = '⏳ Carregue ' + faltando.join(' + ') + ' para montar o relatório.'
+                    + (!potencialLoaded ? '<br><span style="font-size:11px;">(Potencial.xlsx opcional — alimenta status de caminhões, RPM e disponibilidade)</span>' : '');
+                return;
+            }
+            noData.style.display = 'none';
+            content.style.display = 'block';
+
+            // ── Cards principais ──────────────────────────────────────────
+            const linhas = rpCalcPorFrente();
+            const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
+            document.getElementById('rp-val-realizado').innerText = fmtT(totalRealizado);
+            const proj = calcProjecaoMoagem();
+            document.getElementById('rp-val-projecao').innerText = fmtT(proj.projecao);
+            document.getElementById('rp-val-meta').innerText = fmtT(typeof metaMoagemDiaria === 'number' ? metaMoagemDiaria : 0);
+
+            // ── Status de caminhões (último snapshot do Potencial.xlsx) ────
+            const statusGrid = document.getElementById('rp-status-grid');
+            const statusHora = document.getElementById('rp-status-hora');
+            const h = rpUltimaHoraPotencial();
+            if (h !== null) {
+                const p = potencialData[h];
+                statusHora.innerText = '· hora ' + String(h).padStart(2, '0') + ':00';
+                const coaDados = rpCoaDia();
+                const analisado = coaDados.filter(c => c.analisado).length;
+                const totalCoa = coaDados.length;
+                const pctAnalisado = totalCoa > 0 ? (analisado / totalCoa) * 100 : 0;
+                const itens = [
+                    ['🚚 IDA', p.ida, 'ida'], ['🌾 CAMPO', p.campo, 'campo'], ['↩️ VOLTA', p.volta, 'volta'],
+                    ['⏳ FILA EXT.', p.filaExt, 'filaExt'], ['📤 DESCARGA', p.descarga, 'descarga'], ['🛑 PARADOS', p.parado, 'parados'],
+                    ['🚛 CARRETAS CARREGADAS', p.carretas, 'carretas'], ['⚙️ RPM MOENDA', p.rpm, 'rpm']
+                ];
+                statusGrid.innerHTML = itens.map(([label, v, key]) => {
+                    const r = rpStatusRuleInfo(key, v);
+                    const cls = v === null || v === undefined ? '' : (r.ok ? 'rp-status-ok' : 'rp-status-bad');
+                    return `<div class="kpi-card ${cls}" title="${r.tooltip}"><small>${label}</small><span class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</span></div>`;
+                }).join('')
+                    + (() => {
+    const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
+    const naoAnalisado = totalCoa - analisado;
+    return `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}">
+                <small>🔬 ANALISADO</small>
+                <span class="val">${totalCoa}</span>
+                <div class="meta-info" style="font-size:10px;line-height:1.3;">
+                    <span style="color:var(--color-success-text, #15803d);">✅ ${analisado} SIM</span>
+                    &nbsp;|&nbsp;
+                    <span style="color:var(--color-danger-text, #b91c1c);">❌ ${naoAnalisado} NÃO</span>
+                </div>
+            </div>`
+        + `<div class="kpi-card ${rAn.ok ? 'rp-status-ok' : 'rp-status-bad'}" title="${rAn.tooltip}"><small>📊 % ANALISADOS</small><span class="val">${rpFmtNum(pctAnalisado, 1)}%</span></div>`;
+})();
+            } else {
+                statusHora.innerText = '';
+                statusGrid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#94a3b8;font-weight:700;padding:16px;">⏳ Carregue Potencial.xlsx para ver o status de caminhões e RPM.</div>';
+            }
+
+            // ── Tabela grande por frente ─────────────────────────────────
+            let somaMeta = 0, somaPlanejado = 0, somaReal = 0, somaViagens = 0, somaProjecao = 0, somaSaldo = 0, raioW = 0, densW = 0, analiseW = 0, temProjecaoValida = false;
+            const corDiferenca = v => v >= 0 ? 'var(--color-success-text)' : 'var(--color-danger-text)';
+            const bodyRows = linhas.map(l => {
+                somaMeta += l.meta24h; somaPlanejado += l.planejado; somaReal += l.realizado;
+                somaViagens += l.viagens;
+                if (l.projecaoDia !== null) { somaProjecao += l.projecaoDia; somaSaldo += l.saldo24h; temProjecaoValida = true; }
+                raioW += l.raioMedio * l.meta24h; densW += l.densidade * l.viagens; analiseW += l.analisePct * l.meta24h;
+                const projecaoCel = l.projecaoDia !== null
+                    ? `<td>${rpFmtNum(l.projecaoDia, 2)}</td>`
+                    : `<td title="Aguardando pelo menos 3h fechadas para projetar com segurança">—</td>`;
+                const saldoCel = l.saldo24h !== null
+                    ? `<td style="color:${corDiferenca(l.saldo24h)};font-weight:800;">${l.saldo24h >= 0 ? '▲' : '▼'} ${rpFmtNum(Math.abs(l.saldo24h), 2)}</td>`
+                    : `<td title="Aguardando pelo menos 3h fechadas para projetar com segurança">—</td>`;
+                return `<tr>
+                    <td><strong>${l.frente}</strong></td>
+                    <td>${l.fa || '—'}</td>
+                    <td>${rpFmtNum(l.raioMedio, 1)}</td>
+                    <td>${rpFmtNum(l.meta24h, 0)}</td>
+                    <td>${rpFmtNum(l.metaHora, 1)}</td>
+                    <td>${rpFmtNum(l.planejado, 0)}</td>
+                    <td>${rpFmtNum(l.realizado, 2)}</td>
+                    <td style="color:${corDiferenca(l.diferenca)};font-weight:800;">${l.diferenca >= 0 ? '▲' : '▼'} ${rpFmtNum(Math.abs(l.diferenca), 2)}</td>
+                    <td>${rpFmtNum(l.densidade, 2)}</td>
+                    <td>${l.viagens}</td>
+                    <td>${rpFmtNum(l.analisePct, 1)}%</td>
+                    ${projecaoCel}
+                    ${saldoCel}
+                </tr>`;
+            }).join('');
+            const totalRow = `<tr style="font-weight:800;background:var(--color-bg-surface-2, rgba(64,128,12,.08));">
+                <td colspan="2">TOTAL</td>
+                <td>${somaMeta > 0 ? rpFmtNum(raioW / somaMeta, 1) : '—'}</td>
+                <td>${rpFmtNum(somaMeta, 0)}</td>
+                <td>${rpFmtNum(somaMeta / 24, 1)}</td>
+                <td>${rpFmtNum(somaPlanejado, 0)}</td>
+                <td>${rpFmtNum(somaReal, 2)}</td>
+                <td style="color:${corDiferenca(somaReal - somaPlanejado)};">${rpFmtNum(somaReal - somaPlanejado, 2)}</td>
+                <td>${somaViagens > 0 ? rpFmtNum(densW / somaViagens, 2) : '—'}</td>
+                <td>${somaViagens}</td>
+                <td>${somaMeta > 0 ? rpFmtNum(analiseW / somaMeta, 1) : '—'}%</td>
+                <td>${temProjecaoValida ? rpFmtNum(somaProjecao, 2) : '—'}</td>
+                <td style="color:${corDiferenca(somaSaldo)};">${temProjecaoValida ? rpFmtNum(somaSaldo, 2) : '—'}</td>
+            </tr>`;
+            document.getElementById('rp-tabela-frentes-body').innerHTML = bodyRows + totalRow;
+
+            // ── Produção Canavieiro (Próprio × Terceiro) ────────────────
+            const dados = rpDadosDia();
+            const pesoProp = dados.filter(d => !d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const pesoTerc = dados.filter(d => d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const totalPT = pesoProp + pesoTerc;
+
+            // ── Donut Própria × Fornecedor (coluna "Tipo Proprietario (F.A.)") ──
+            const donutCanvas = document.getElementById('rp-propterc-donut-canvas');
+            if (charts['rp-propterc-donut']) { charts['rp-propterc-donut'].destroy(); delete charts['rp-propterc-donut']; }
+            const pctCenter = document.getElementById('rp-propterc-pct-center');
+            const totalPropEl = document.getElementById('rp-propterc-total-prop');
+            const totalTercEl = document.getElementById('rp-propterc-total-terc');
+            if (totalPropEl) totalPropEl.innerText = fmtT(pesoProp);
+            if (totalTercEl) totalTercEl.innerText = fmtT(pesoTerc);
+            if (pctCenter) pctCenter.innerText = totalPT > 0 ? rpFmtNum(pesoProp / totalPT * 100, 1) + '%' : '—';
+            if (donutCanvas) {
+                const donutData = totalPT > 0 ? [pesoProp, pesoTerc] : [0, 1];
+                const donutColors = totalPT > 0 ? ['#40800c', '#e9a23b'] : ['#cbd5e1', '#f1f5f9'];
+                charts['rp-propterc-donut'] = new Chart(donutCanvas.getContext('2d'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Própria', 'Fornecedor'],
+                        datasets: [{
+                            data: donutData,
+                            backgroundColor: donutColors,
+                            borderWidth: 3,
+                            borderColor: getToken('--color-bg-surface', '#ffffff')
+                        }]
+                    },
+                    options: {
+                        cutout: '60%',
+                        maintainAspectRatio: false,
+                        animation: { duration: 600 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => {
+                                        const val = ctx.raw;
+                                        const pct = totalPT > 0 ? (val / totalPT * 100).toFixed(1) : '0.0';
+                                        return ` ${ctx.label}: ${rpFmtNum(val, 2)} t (${pct}%)`;
+                                    }
+                                }
+                            },
+                            datalabels: {
+                                display: (ctx) => ctx.dataset.data[ctx.dataIndex] > 0 && totalPT > 0,
+                                formatter: (val) => (val / totalPT * 100).toFixed(1) + '%',
+                                color: corDeTextoParaGrafico(),
+                                font: { weight: '800', size: 12 },
+                                anchor: 'center',
+                                align: 'center'
+                            }
+                        }
+                    }
+                });
+            }
+
+            if (charts['rp-canvieiro']) { charts['rp-canvieiro'].destroy(); delete charts['rp-canvieiro']; }
+            const canvCanvieiro = document.getElementById('rp-canvieiro-canvas');
+            if (canvCanvieiro && totalPT > 0) {
+                const pctProp = pesoProp / totalPT * 100;
+                const pctTerc = pesoTerc / totalPT * 100;
+                charts['rp-canvieiro'] = rpChartBarrasComparativo(canvCanvieiro, {
+                    labels: ['Próprio %', 'Terceiro %'],
+                    valores: [pctProp, pctTerc],
+                    cores: ['#40800c', '#f59e0b'],
+                    formatarLabel: (v) => rpFmtNum(v, 2) + '%',
+                    formatarTooltip: (v) => rpFmtNum(v, 2) + '%'
+                });
+            }
+
+            // ── Raio Médio (Próprio × Terceiro) ──────────────────────────
+            if (charts['rp-raiomedio']) { charts['rp-raiomedio'].destroy(); delete charts['rp-raiomedio']; }
+            const canvRaioMedio = document.getElementById('rp-raiomedio-canvas');
+            if (canvRaioMedio && balanceLoaded) {
+                const dadosBalanco = selectedDay === 'TODOS' ? balanceData : balanceData.filter(d => d.dia === selectedDay);
+                const raioPropArr = dadosBalanco.filter(d => d.camProp && d.raio > 0).map(d => d.raio);
+                const raioTercArr = dadosBalanco.filter(d => d.camTerc && d.raio > 0).map(d => d.raio);
+                const raioPropMedio = avg(raioPropArr);
+                const raioTercMedio = avg(raioTercArr);
+                if (raioPropMedio > 0 || raioTercMedio > 0) {
+                    charts['rp-raiomedio'] = rpChartBarrasComparativo(canvRaioMedio, {
+                        labels: ['Terceiro', 'Próprio'],
+                        valores: [raioTercMedio, raioPropMedio],
+                        cores: ['#f59e0b', '#40800c'],
+                        formatarLabel: (v) => rpFmtNum(v, 2) + ' km',
+                        formatarTooltip: (v) => rpFmtNum(v, 2) + ' km'
+                    });
+                }
+            }
+
+            // ── Top Caminhões / Top Colhedoras ──────────────────────────
+            const rankHtml = (arr) => arr.map((r, i) => {
+                const rank = i + 1;
+                const cls = rank <= 3 ? `rank-${rank}` : 'rank-n';
+                return `<tr><td><span class="top10-rank ${cls}">${rank}</span></td><td><strong>${r.cod}</strong></td><td style="text-align:right;">${rpFmtNum(r.peso, 2)} t</td></tr>`;
+            }).join('') || '<tr><td colspan="3" style="text-align:center;color:#94a3b8;">Sem dados</td></tr>';
+            document.getElementById('rp-top-caminhoes').querySelector('tbody').innerHTML = rankHtml(rpCalcTop('frota'));
+            document.getElementById('rp-top-colhedoras').querySelector('tbody').innerHTML = rankHtml(rpCalcTop('colh'));
+
+            // ── Detalhe por Frente/Tipo ──────────────────────────────────
+            // Densidade colorida seguindo a mesma regra do resto do programa
+            // (getDensidadeMensagem), aplicada apenas às linhas Própria/Próprio.
+            const detalhe = rpCalcDetalhe();
+            document.getElementById('rp-tabela-detalhe-body').innerHTML = detalhe.map(d => {
+                const densidade = d.viagens > 0 ? d.peso / d.viagens : 0;
+                const isPropria = d.owner === 'Próprio';
+                let densCellStyle = '';
+                if (isPropria && d.viagens > 0) {
+                    const info = getDensidadeMensagem(densidade, d.viagens);
+                    const cor = info.class === 'densidade-ruim' ? 'var(--color-danger-text)'
+                        : info.class === 'densidade-mediano' ? 'var(--color-warning-text)'
+                        : 'var(--color-success-text)';
+                    densCellStyle = ` style="color:${cor};font-weight:800;"`;
+                }
+                return `<tr><td><strong>${d.frente}</strong></td><td>${d.owner} · ${d.tipo}</td><td>${rpFmtNum(d.peso, 2)} t</td><td${densCellStyle}>${rpFmtNum(densidade, 2)}</td><td>${d.viagens}</td></tr>`;
+            }).join('') || '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">Sem dados</td></tr>';
+
+            // ── Gráficos horários ────────────────────────────────────────
+            rpRenderGraficosHorarios();
+        }
+
+        function rpRenderGraficosHorarios() {
+            const HORAS = HORAS_CICLO;
+            const LABELS = HORAS.map(hh => String(hh).padStart(2, '0') + ':00');
+            const corVerm = getToken('--color-danger', '#dc2626');
+            const corTxt = corDeTextoParaGrafico();
+            const escuro = document.documentElement.getAttribute('data-theme') === 'dark';
+            // Pílula de valor em cima da coluna: fundo preto/texto branco no modo
+            // claro, invertido (fundo branco/texto preto) no modo escuro — sempre
+            // com contraste alto, independente da cor da barra.
+            const pilulaBg = escuro ? '#ffffff' : '#000000';
+            const pilulaCor = escuro ? '#000000' : '#ffffff';
+            const rpDatalabels = (casas) => ({
+                display: (ctx) => { const v = ctx.dataset.data[ctx.dataIndex]; return v !== null && v !== undefined && v !== 0; },
+                anchor: 'end',
+                align: 'top',
+                offset: 2,
+                backgroundColor: pilulaBg,
+                color: pilulaCor,
+                borderRadius: 4,
+                padding: { top: 3, bottom: 3, left: 6, right: 6 },
+                font: { weight: '800', size: 10 },
+                formatter: (v) => rpFmtNum(v, casas)
+            });
+
+            // Colore as barras: vermelho abaixo da meta, cor normal na meta ou acima.
+            const rpCorBarras = (arr, metaVal, corOk) => arr.map(v => {
+                if (v === null || v === undefined) return 'transparent';
+                if (metaVal === null || metaVal === undefined || isNaN(metaVal) || metaVal <= 0) return corOk;
+                return v < metaVal ? corVerm : corOk;
+            });
+
+            // Plugin genérico: desenha uma linha tracejada horizontal na altura da meta.
+            const rpMetaLinePlugin = (getMeta, cor) => ({
+                id: 'rpMetaLine',
+                afterDatasetsDraw(chart) {
+                    const meta = getMeta();
+                    if (meta === null || meta === undefined || isNaN(meta) || meta <= 0) return;
+                    const { ctx, scales: { x, y } } = chart;
+                    if (!x || !y) return;
+                    const yPos = y.getPixelForValue(meta);
+                    if (yPos < y.top || yPos > y.bottom) return;
+                    ctx.save();
+                    ctx.strokeStyle = cor;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(x.left, yPos);
+                    ctx.lineTo(x.right, yPos);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = cor;
+                    ctx.font = 'bold 11px "Plus Jakarta Sans", sans-serif';
+                    ctx.textAlign = 'right';
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillText('META ' + rpFmtNum(meta, meta % 1 === 0 ? 0 : 1), x.right - 4, yPos - 4);
+                    ctx.restore();
+                }
+            });
+
+            // ── Moagem Hora — meta automática = META DE MOAGEM (t) / 24 ──────
+            const canvMoagem = document.getElementById('rp-moagem-hora-canvas');
+            const metaMoagemHora = (typeof metaMoagemDiaria === 'number' && metaMoagemDiaria > 0) ? metaMoagemDiaria / 24 : null;
+            const metaMoagemDisplay = document.getElementById('rp-meta-moagem-hora-display');
+            if (metaMoagemDisplay) metaMoagemDisplay.innerText = metaMoagemHora !== null ? rpFmtNum(metaMoagemHora, 1) : '—';
+            if (canvMoagem) {
+                const totalPorHora = getTotalPorHoraArray().map(v => v > 0 ? parseFloat(v.toFixed(2)) : 0);
+                if (charts['rp-moagem-hora']) { charts['rp-moagem-hora'].destroy(); delete charts['rp-moagem-hora']; }
+                charts['rp-moagem-hora'] = new Chart(canvMoagem.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ label: 'Toneladas', data: totalPorHora, backgroundColor: rpCorBarras(totalPorHora, metaMoagemHora, '#40800c'), borderRadius: 3, datalabels: rpDatalabels(1) }] },
+                    plugins: [rpMetaLinePlugin(() => metaMoagemHora, '#3b82f6')],
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        layout: { padding: { top: 26, right: 60 } },
+                        scales: {
+                            x: { ticks: { color: corTxt } },
+                            y: { ticks: { color: corTxt } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+
+            // Potencial de Colheita / Rotação da Moenda / Disponibilidade — vêm do Potencial.xlsx
+            const potArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].potencial : null);
+            const rpmArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].rpm : null);
+            const dispColhArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispColh * 100 : null);
+            const dispTransbArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispTransb * 100 : null);
+            const dispCamArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispCam * 100 : null);
+
+            // ── Potencial de Colheita — meta ajustável pelo usuário ──────────
+            if (rpMetas.potencial === null) {
+                const validos = potArr.filter(v => v !== null && v > 0);
+                rpMetas.potencial = validos.length ? Math.round(avg(validos)) : null;
+            }
+            const inputPot = document.getElementById('rp-meta-potencial');
+            if (inputPot && document.activeElement !== inputPot) inputPot.value = rpMetas.potencial !== null ? rpMetas.potencial : '';
+            const canvPot = document.getElementById('rp-potencial-canvas');
+            if (canvPot) {
+                if (charts['rp-potencial']) { charts['rp-potencial'].destroy(); delete charts['rp-potencial']; }
+                charts['rp-potencial'] = new Chart(canvPot.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ label: 'Potencial', data: potArr, backgroundColor: rpCorBarras(potArr, rpMetas.potencial, '#3b82f6'), borderRadius: 3, datalabels: rpDatalabels(0) }] },
+                    plugins: [rpMetaLinePlugin(() => rpMetas.potencial, '#f59e0b')],
+                    options: {
+                        responsive: true, maintainAspectRatio: false, spanGaps: false,
+                        layout: { padding: { top: 26, right: 60 } },
+                        scales: {
+                            x: { ticks: { color: corTxt } },
+                            y: { ticks: { color: corTxt } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+
+            // ── Rotação da Moenda (RPM) — meta ajustável pelo usuário ────────
+            if (rpMetas.rpm === null) {
+                const validos = rpmArr.filter(v => v !== null && v > 0);
+                rpMetas.rpm = validos.length ? Math.round(avg(validos) * 10) / 10 : null;
+            }
+            const inputRpm = document.getElementById('rp-meta-rpm');
+            if (inputRpm && document.activeElement !== inputRpm) inputRpm.value = rpMetas.rpm !== null ? rpMetas.rpm : '';
+            const canvRpm = document.getElementById('rp-rpm-canvas');
+            if (canvRpm) {
+                if (charts['rp-rpm']) { charts['rp-rpm'].destroy(); delete charts['rp-rpm']; }
+                charts['rp-rpm'] = new Chart(canvRpm.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ label: 'RPM', data: rpmArr, backgroundColor: rpCorBarras(rpmArr, rpMetas.rpm, '#8b5cf6'), borderRadius: 3, datalabels: rpDatalabels(0) }] },
+                    plugins: [rpMetaLinePlugin(() => rpMetas.rpm, '#f59e0b')],
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        layout: { padding: { top: 26, right: 60 } },
+                        scales: {
+                            x: { ticks: { color: corTxt } },
+                            y: { ticks: { color: corTxt } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+            const canvDisp = document.getElementById('rp-disp-canvas');
+            if (canvDisp) {
+                if (charts['rp-disp']) { charts['rp-disp'].destroy(); delete charts['rp-disp']; }
+                const corNo = escuro ? '#ffffff' : '#000000';
+                const rpDispDatalabels = {
+                    display: (ctx) => { const v = ctx.dataset.data[ctx.dataIndex]; return v !== null && v !== undefined; },
+                    align: 'top',
+                    anchor: 'end',
+                    offset: 4,
+                    color: corNo,
+                    font: { weight: '800', size: 10 },
+                    formatter: (v) => Math.round(v) + '%'
+                };
+                charts['rp-disp'] = new Chart(canvDisp.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: LABELS,
+                        datasets: [
+                            { label: 'Disp. Colhedora', data: dispColhArr, borderColor: '#40800c', backgroundColor: '#40800c', tension: .3, datalabels: rpDispDatalabels },
+                            { label: 'Disp. Transbordo', data: dispTransbArr, borderColor: '#f59e0b', backgroundColor: '#f59e0b', tension: .3, datalabels: rpDispDatalabels },
+                            { label: 'Disp. Caminhão', data: dispCamArr, borderColor: '#3b82f6', backgroundColor: '#3b82f6', tension: .3, datalabels: rpDispDatalabels }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, spanGaps: false,
+                        layout: { padding: { top: 20 } },
+                        scales: {
+                            y: { ticks: { callback: v => v + '%', color: corTxt } },
+                            x: { ticks: { color: corTxt } }
+                        },
+                        plugins: {
+                            legend: { labels: { color: corTxt } }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Estado das metas ajustáveis manualmente (Potencial / RPM). A meta de
+        // Moagem Hora é sempre automática = META DE MOAGEM / 24 (não editável).
+        let rpMetas = { potencial: null, rpm: null };
+        function rpAtualizarMeta(chave, valor) {
+            const v = parseFloat(String(valor).replace(',', '.'));
+            rpMetas[chave] = isNaN(v) ? null : v;
+            rpRenderGraficosHorarios();
+        }
+
+        function openDensidadeModal(label, rows) {
+            const modal = document.getElementById('detail-modal');
+            const title = document.getElementById('modal-title');
+            const body = document.getElementById('modal-body');
+            title.innerHTML = '🚛 Densidade — ' + label;
+            const sorted = rows.slice().sort(function(a, b) {
+                return parseInt(a.viagem) - parseInt(b.viagem);
+            });
+            const totalPeso = sorted.reduce(function(s, r) { return s + r.peso; }, 0);
+            const media = sorted.length ? totalPeso / sorted.length : 0;
+            let html = '<div class="detail-section-title">📋 Viagens — ' + sorted.length + ' viagem(ns)</div>';
+            html += '<div class="table-container"><table style="width:100%;font-size:13px;border-collapse:collapse;">'
+                + '<thead><tr>'
+                + '<th style="padding:6px 10px;background:#1e293b;color:#fff;text-align:left;">Frota Motriz</th>'
+                + '<th style="padding:6px 10px;background:#1e293b;color:#fff;text-align:center;">Nº Viagem</th>'
+                + '<th style="padding:6px 10px;background:#1e293b;color:#fff;text-align:right;">Peso Líquido</th>'
+                + '</tr></thead><tbody>';
+            sorted.forEach(function(r, i) {
+                const bg = i % 2 === 0 ? '#f8fafc' : '#fff';
+                html += '<tr style="background:' + bg + '">'
+                    + '<td style="padding:6px 10px;font-weight:700;">' + (r.frota || '—') + '</td>'
+                    + '<td style="padding:6px 10px;text-align:center;color:#0891b2;font-weight:700;">' + r.viagem + '</td>'
+                    + '<td style="padding:6px 10px;text-align:right;font-weight:700;">' + r.peso.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' t</td>'
+                    + '</tr>';
+            });
+            html += '</tbody></table></div>';
+            html += '<div style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border-radius:8px;display:flex;gap:24px;flex-wrap:wrap;">'
+                + '<span style="font-size:13px;font-weight:700;color:#15803d;">Total: ' + totalPeso.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' t</span>'
+                + '<span style="font-size:13px;font-weight:700;color:#0891b2;">Média: ' + media.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' t/vg</span>'
+                + '</div>';
+            body.innerHTML = html;
+            modal.classList.add('active');
+        }
+
+        function openModal(frente, tipo, data) {
+            const modal = document.getElementById('detail-modal');
+            const title = document.getElementById('modal-title');
+            const body = document.getElementById('modal-body');
+            title.innerHTML = `${tipo} - FRENTE ${frente}`;
+            const total = data.PRODUTIVO + data.IMPRODUTIVO + data.MANUTENCAO + (data.OUTROS || 0);
+            let html = `<div class="detail-section-title">📊 Resumo</div>
+            <div class="detail-item"><span class="detail-name">Produtivo</span><span class="detail-value">${data.PRODUTIVO.toFixed(1)}h (${((data.PRODUTIVO / total) * 100).toFixed(1)}%)</span></div>
+            <div class="detail-item"><span class="detail-name">Improdutivo</span><span class="detail-value">${data.IMPRODUTIVO.toFixed(1)}h (${((data.IMPRODUTIVO / total) * 100).toFixed(1)}%)</span></div>
+            <div class="detail-item"><span class="detail-name">Manutenção</span><span class="detail-value">${data.MANUTENCAO.toFixed(1)}h (${((data.MANUTENCAO / total) * 100).toFixed(1)}%)</span></div>\n            ${(data.OUTROS || 0) > 0 ? `<div class="detail-item"><span class="detail-name" style="color:#94a3b8">Outros</span><span class="detail-value" style="color:#94a3b8">${(data.OUTROS || 0).toFixed(1)}h (${((data.OUTROS || 0) / total * 100).toFixed(1)}%)</span></div>` : ""}`;
+
+            const frotas = data.frotas || [];
+            if (frotas.length > 0) {
+                html += `<div class="detail-section-title">🚜 Detalhamento por Frota</div>`;
+                frotas.forEach(frota => {
+                    html += `<div class="frota-card">
+                    <div class="frota-header">🏷️ ${frota.nome}</div>
+                    <div class="frota-stats">
+                        <div class="frota-stat"><div class="frota-stat-value" style="color:#22c55e">${frota.PRODUTIVO.toFixed(1)}h</div><div class="frota-stat-label">Produtivo</div></div>
+                        <div class="frota-stat"><div class="frota-stat-value" style="color:#f59e0b">${frota.IMPRODUTIVO.toFixed(1)}h</div><div class="frota-stat-label">Improdutivo</div></div>
+                        <div class="frota-stat"><div class="frota-stat-value" style="color:#ef4444">${frota.MANUTENCAO.toFixed(1)}h</div><div class="frota-stat-label">Manutenção</div></div>
+                        ${(frota.OUTROS || 0) > 0 ? `<div class="frota-stat"><div class="frota-stat-value" style="color:#94a3b8">${(frota.OUTROS || 0).toFixed(1)}h</div><div class="frota-stat-label">Outros</div></div>` : ""}
+                    </div>
+                    <div style="margin-top:10px;"><div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">📋 Distribuição das 24h</div>${Object.entries(frota.operacoes).sort((a, b) => b[1] - a[1]).map(([op, h]) => { const pct = (h / 24 * 100).toFixed(0); const clr = frota.PRODUTIVO > 0 && ["Colhendo Cana", "Deslocamento Carregado", "Deslocamento Vazio", "Transbordo Carregando", "Transbordando Carga"].includes(op) ? "#22c55e" : ["Aguardo Descarregar", "Aguardando Colhedora", "Fila de Transbordo", "Aguardando Transbordo", "Aguardando Mecânico", "Aguardando Abastec.", "Chuva", "Intervalo Refeição", "Fila p/ Descarga", "Aguard. Manuten."].includes(op) ? "#f59e0b" : ["Manutenção Mecânica", "Manutenção Elétrica", "Manutenção Hidráulica", "Manutenção Pneus"].includes(op) ? "#ef4444" : "#94a3b8"; return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><div style="width:100px;font-size:10px;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${op}">${op}</div><div style="flex:1;background:#f1f5f9;border-radius:4px;height:10px;overflow:hidden;"><div style="width:${pct}%;height:10px;background:${clr};border-radius:4px;transition:width .4s;"></div></div><div style="width:36px;font-size:10px;font-weight:700;color:${clr};text-align:right;">${h.toFixed(1)}h</div></div>`; }).join("")}</div>
+                </div>`;
+                });
+            }
+            body.innerHTML = html;
+            modal.classList.add('active');
+        }
+
+        function renderSolinftec() {
+            if (window.PioresFrentesComponent) window.PioresFrentesComponent.render(solinftecData.frentes);
+
+            if (window.MatrizPerformanceComponent) window.MatrizPerformanceComponent.render(solinftecData.frentes);
+
+            if (window.ResumoHorasComponent) window.ResumoHorasComponent.render(solinftecData.totais);
+
+            renderGrid('COLHEDORA', 'solinftec-colhedoras');
+            renderGrid('TRANSBORDO', 'solinftec-transbordos');
+            if (window.OperacionalIntelligence) window.OperacionalIntelligence.analisarSolinftec(solinftecData);
+        }
+
+        function renderGrid(tipo, containerId) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            container.innerHTML = '';
+            const frentes = Object.entries(solinftecData.frentes).sort();
+            frentes.forEach(([nome, data]) => {
+                const m = data.machines[tipo];
+                if (m.total <= 0) return;
+                let topGargalo = { nome: 'Nenhum', horas: 0 };
+                Object.entries(m.ops).forEach(([n, v]) => { if (v > topGargalo.horas) topGargalo = { nome: n, horas: v }; });
+                const isError = m.IMPRODUTIVO === 24 || m.MANUTENCAO === 24 || m.PRODUTIVO === 24;
+                const canvasId = `chart-${tipo}-${nome.replace(/\s/g, '')}`;
+                const tipoLabel = tipo === 'COLHEDORA' ? '🚜 Colhedora' : '🚛 Transbordo';
+                let alertBox = '';
+                if (isError) alertBox = `<div class="error-box">⚠️ ALERTA: 24h consecutivas da mesma operação - ERRO DE APONTAMENTO</div>`;
+                else if (topGargalo.horas > 0) alertBox = `<div class="bottleneck-box">🔥 Gargalo: ${topGargalo.nome} (${topGargalo.horas.toFixed(1)}h)</div>`;
+                else alertBox = `<div class="healthy-box">✅ Operação Saudável</div>`;
+
+                const frotasList = Object.values(m.frotas || {}).map(f => ({
+                    nome: f.nome,
+                    PRODUTIVO: f.PRODUTIVO,
+                    IMPRODUTIVO: f.IMPRODUTIVO,
+                    MANUTENCAO: f.MANUTENCAO,
+                    operacoes: f.operacoes
+                }));
+
+                const html = `<div class="card"><div class="section-title">${tipoLabel} - ${nome}</div>
+                <div class="kpi-mini-row">
+                    <div class="kpi-mini"><div class="kpi-mini-val" style="color:#22c55e">${m.PRODUTIVO.toFixed(1)}h</div><div class="kpi-mini-lbl">Produtivo</div></div>
+                    <div class="kpi-mini"><div class="kpi-mini-val" style="color:#f59e0b">${m.IMPRODUTIVO.toFixed(1)}h</div><div class="kpi-mini-lbl">Improdutivo</div></div>
+                    <div class="kpi-mini"><div class="kpi-mini-val" style="color:#ef4444">${m.MANUTENCAO.toFixed(1)}h</div><div class="kpi-mini-lbl">Manutenção</div></div>
+                    ${(m.OUTROS || 0) > 0 ? `<div class="kpi-mini"><div class="kpi-mini-val" style="color:#94a3b8">${(m.OUTROS || 0).toFixed(1)}h</div><div class="kpi-mini-lbl">Outros</div></div>` : ''}
+                </div>
+                <div class="chart-container" onclick='openModal("${nome}", "${tipoLabel}", { PRODUTIVO: ${m.PRODUTIVO}, IMPRODUTIVO: ${m.IMPRODUTIVO}, MANUTENCAO: ${m.MANUTENCAO}, frotas: ${JSON.stringify(frotasList).replace(/"/g, '&quot;')} })'>
+                    <div class="chart-center-text"><div class="center-value">24h</div><div class="center-label">${Object.keys(m.frotas || {}).length} equip.</div></div>
+                    <canvas id="${canvasId}"></canvas>
+                </div>${alertBox}</div>`;
+                container.insertAdjacentHTML('beforeend', html);
+                if (charts[canvasId]) charts[canvasId].destroy();
+                const ctx = document.getElementById(canvasId).getContext('2d');
+                charts[canvasId] = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: { labels: ['Produtivo', 'Improdutivo', 'Manutenção'], datasets: [{ data: [m.PRODUTIVO, m.IMPRODUTIVO, m.MANUTENCAO, m.OUTROS || 0], backgroundColor: ['#22c55e', '#f59e0b', '#ef4444', '#94a3b8'], borderWidth: 0, hoverOffset: 15 }] },
+                    options: { responsive: true, maintainAspectRatio: false, cutout: '70%', animation: { animateRotate: true, animateScale: false, duration: 900, easing: 'easeInOutCubic' }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${ctx.raw.toFixed(1)}h` } }, datalabels: { color: '#fff', font: { weight: '800', size: 11 }, formatter: (val, ctx) => { const total = ctx.dataset.data.reduce((a, b) => a + b, 0); const pct = (val / total) * 100; return val > 0 && pct >= 5 ? pct.toFixed(0) + '%' : null; }, anchor: 'center', align: 'center', offset: 0 } }, layout: { padding: 10 } }
+                });
+            });
+        }
+
+        function closeModal() { document.getElementById('detail-modal').classList.remove('active'); }
+
+        function updateStatus() {
+            const fileStatus = document.getElementById('fileStatus');
+            let balanceIcon = balanceLoaded ? '✅' : '❌';
+            let solinftecIcon = solinftecLoaded ? '✅' : '❌';
+
+            let statusHtml = `${balanceIcon} Producao.xlsx | ${solinftecIcon} Solinftec.xlsx`;
+
+            // Adiciona o período ao status global se estiver carregado
+            if (solinftecLoaded && solinftecPeriodo) {
+                statusHtml += ` | <span style="color:#40800c; font-weight:800;">🗓️ Período: ${solinftecPeriodo}</span>`;
+            }
+
+            if (fileStatus) fileStatus.innerHTML = statusHtml;
+            const msgDiv = document.getElementById('statusMsg');
+            if (balanceLoaded && solinftecLoaded) { msgDiv.innerHTML = '✅ Ambos os arquivos carregados com sucesso!'; msgDiv.className = 'status-success'; }
+            else if (balanceLoaded || solinftecLoaded) { msgDiv.innerHTML = '⚠️ Apenas um dos arquivos foi carregado.'; msgDiv.className = 'status-warning'; }
+            else { msgDiv.innerHTML = '❌ Nenhum arquivo encontrado. Selecione a pasta com os arquivos.'; msgDiv.className = 'status-error'; }
+        }
+
+        // ── ℹ️ Info de fonte de dados por aba ──────────────────────────────
+        const TAB_INFO = {
+            solinftec: '📄 Fonte de dados: <strong>Solinftec.xlsx</strong><br>Status operacional (Produtivo / Improdutivo / Manutenção) por frente, direto do relatório Solinftec.',
+            balance: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Registros de balança: viagens, peso líquido, frota, frente, tipo de carga e classificação Próprio/Terceiro.',
+            densidade: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Densidade calculada a partir do peso líquido por viagem (mesmo relatório de balança).',
+            controle: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Entrada de cana por hora, agregada por frente e por Próprio/Terceiro.',
+            consumo: '📄 Fontes de dados: <strong>ConsumoCanavieiros.xls / ConsumoColhedoras.xls</strong> (relatório GAtec — Índices Operacionais)<br>+ <strong>CAMINHÃO.xlsx / Colhedoras.xlsx</strong> (classificação de frota).',
+            liberacao: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Colunas Cod.Fazenda / Desc.Fazenda / Liberação / Cod.Frente, extraídas do mesmo relatório de balança.',
+            lab: '📄 Fonte de dados: <strong>Producao.xlsx</strong><br>Análise COA (coluna Analisado) cruzada com Hora/Turno e Frente do mesmo relatório de balança.',
+            relproducao: '📄 Fontes de dados: <strong>METAS.xlsx</strong> (Frente/F.Agr/Raio Médio/Meta 24h, por fazenda) + <strong>Potencial.xlsx</strong> (disponibilidades, potencial hora a hora e RPM da moenda) + <strong>Producao.xlsx</strong> (Realizado, Densidade, Análise%, Top Caminhões/Colhedoras).<br>Planejado/Projeção/Saldo 24H são calculados a partir das horas já fechadas do dia agrícola.'
+        };
+
+        function showTabInfo(el, tab) {
+            const pop = document.getElementById('tab-info-popover');
+            if (!pop) return;
+            pop.innerHTML = TAB_INFO[tab] || '';
+            pop.dataset.tab = tab;
+            const rect = el.getBoundingClientRect();
+            pop.classList.add('show');
+            const popWidth = pop.offsetWidth || 280;
+            let left = rect.left + rect.width / 2 - popWidth / 2;
+            left = Math.max(8, Math.min(left, window.innerWidth - popWidth - 8));
+            pop.style.left = left + 'px';
+            pop.style.top = (rect.bottom + 10) + 'px';
+        }
+
+        function hideTabInfo() {
+            const pop = document.getElementById('tab-info-popover');
+            if (pop) { pop.classList.remove('show'); pop.dataset.tab = ''; }
+        }
+
+        function toggleTabInfo(el, tab) {
+            const pop = document.getElementById('tab-info-popover');
+            if (pop && pop.classList.contains('show') && pop.dataset.tab === tab) {
+                hideTabInfo();
+            } else {
+                showTabInfo(el, tab);
+            }
+        }
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.tab-info-icon') && !e.target.closest('#tab-info-popover')) hideTabInfo();
+        });
+        // ─────────────────────────────────────────────────────────────────
+
+        function switchMainTab(tab) {
+            document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            ['main-solinftec', 'main-balance', 'main-densidade', 'main-controle', 'main-consumo', 'main-liberacao', 'main-lab', 'main-relproducao'].forEach(id => {
+                const el = document.getElementById(id); if (el) el.classList.remove('active');
+            });
+            const balHeaderTabs = document.getElementById('balance-tabs-header');
+            if (tab === 'relproducao') {
+                document.getElementById('main-relproducao').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+                renderRelProducao();
+            } else if (tab === 'solinftec') {
+                document.getElementById('main-solinftec').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+            } else if (tab === 'balance') {
+                document.getElementById('main-balance').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'flex';
+            } else if (tab === 'controle') {
+                document.getElementById('main-controle').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+                renderControle();
+            } else if (tab === 'consumo') {
+                document.getElementById('main-consumo').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+                renderConsumo();
+            } else if (tab === 'liberacao') {
+                document.getElementById('main-liberacao').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+                renderLiberacao();
+            } else if (tab === 'lab') {
+                document.getElementById('main-lab').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+                renderLabTimeline();
+                renderLab();
+            } else {
+                document.getElementById('main-densidade').classList.add('active');
+                if (balHeaderTabs) balHeaderTabs.style.display = 'none';
+            }
+        }
+
+        function switchSolinftecTab(tab) {
+            document.querySelectorAll('.solinftec-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('solinftec-geral').classList.remove('active');
+            document.getElementById('solinftec-colhedoras').classList.remove('active');
+            document.getElementById('solinftec-transbordos').classList.remove('active');
+            if (tab === 'geral') document.getElementById('solinftec-geral').classList.add('active');
+            else if (tab === 'colhedoras') document.getElementById('solinftec-colhedoras').classList.add('active');
+            else document.getElementById('solinftec-transbordos').classList.add('active');
+        }
+
+        function switchBalanceTab(tab) {
+            // sync both the header-level tabs and any inline tabs
+            document.querySelectorAll('.balance-tab').forEach(t => t.classList.remove('active'));
+            // activate all buttons matching the clicked tab label
+            document.querySelectorAll('.balance-tab').forEach(t => {
+                if ((tab === 'colheita' && t.textContent.includes('COLHEDORAS')) ||
+                    (tab === 'transporte' && t.textContent.includes('TRANSPORTE'))) {
+                    t.classList.add('active');
+                }
+            });
+            document.getElementById('balance-colheita').classList.remove('active');
+            document.getElementById('balance-transporte').classList.remove('active');
+            if (tab === 'colheita') document.getElementById('balance-colheita').classList.add('active');
+            else document.getElementById('balance-transporte').classList.add('active');
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ── ABA DENSIDADE DE CARGA ── hora agrícola 06:00 → 05:59 ──────
+        // ═══════════════════════════════════════════════════════════════
+
+        const DENS_TIPO_CFG = {
+            'RODOTREM': { bar: '#0891b2', border: '#0e7490', bg: 'rgba(8,145,178,0.15)' },
+            'TREMINHÃO': { bar: '#7c3aed', border: '#6d28d9', bg: 'rgba(124,58,237,0.15)' },
+            'ROMEU E JULIETA': { bar: '#c026d3', border: '#a21caf', bg: 'rgba(192,38,211,0.15)' },
+            'OUTRO': { bar: '#64748b', border: '#475569', bg: 'rgba(100,116,139,0.15)' }
+        };
+        const DENS_META_BOM = 70;
+        const DENS_META_MED = 62;
+        // Rótulos hora agrícola: 06→23, 00→05
+        const HORA_AGR_LABELS = [
+            '06h', '07h', '08h', '09h', '10h', '11h', '12h', '13h', '14h', '15h', '16h', '17h',
+            '18h', '19h', '20h', '21h', '22h', '23h', '00h', '01h', '02h', '03h', '04h', '05h'
+        ];
+        function horaToIdx(h) { return h < 6 ? h + 18 : h - 6; }
+
+        function densGetDias() {
+            return [...new Set(densidadeRaw.map(r => r.diaAgricola))].filter(Boolean).sort();
+        }
+        function densFilterData() {
+            return densSelectedDay === 'TODOS' ? densidadeRaw : densidadeRaw.filter(r => r.diaAgricola === densSelectedDay);
+        }
+
+        function renderDensidadeTimeline() {
+            const tl = document.getElementById('dens-timeline');
+            if (!tl) return;
+            tl.innerHTML = '';
+            const addBtn = (id, label) => {
+                const b = document.createElement('div');
+                b.className = 'day-badge' + (densSelectedDay === id ? ' active' : '');
+                b.innerText = label;
+                b.onclick = () => { densSelectedDay = id; renderDensidadeTimeline(); renderDensidade(); };
+                tl.appendChild(b);
+            };
+            addBtn('TODOS', 'SAFRA COMPLETA');
+            densGetDias().forEach(d => { const p = d.split('-'); addBtn(d, `${p[2]}/${p[1]}`); });
+        }
+
+        // Paleta por frente (até 10 frentes) — pares sólido/tracejado por tipo
+        const DENS_FRENTE_PALETA = [
+            { base: '#40800c', alt: '#86efac' },
+            { base: '#0891b2', alt: '#67e8f9' },
+            { base: '#7c3aed', alt: '#c4b5fd' },
+            { base: '#ea580c', alt: '#fdba74' },
+            { base: '#be185d', alt: '#f9a8d4' },
+            { base: '#0f766e', alt: '#99f6e4' },
+            { base: '#b45309', alt: '#fde68a' },
+            { base: '#1d4ed8', alt: '#93c5fd' },
+            { base: '#6b21a8', alt: '#e9d5ff' },
+            { base: '#064e3b', alt: '#6ee7b7' },
+        ];
+
+        function renderDensidade() {
+            const cont = document.getElementById('dens-content');
+            if (!cont) return;
+            cont.innerHTML = '';
+            const data = densFilterData();
+            if (!data.length) {
+                cont.innerHTML = '<div style="text-align:center;padding:60px;color:#94a3b8;font-weight:700;font-size:14px;">⏳ Nenhum dado disponível. Carregue o arquivo Producao.xlsx.</div>';
+                return;
+            }
+
+            // Hora mais recente no topo
+            const HORAS_DESC = [5, 4, 3, 2, 1, 0, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6];
+            const dayLabel = densSelectedDay === 'TODOS' ? 'Período completo' :
+                (() => { const p = densSelectedDay.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; })();
+
+            // Frentes ordenadas numericamente
+            const frentes = [...new Set(data.map(r => r.frente))].sort((a, b) =>
+                (parseInt(a.replace(/\D/g, '')) || 0) - (parseInt(b.replace(/\D/g, '')) || 0));
+
+            // Series: frente × tipo — uma cor por frente
+            const series = [];
+            frentes.forEach((frente, fi) => {
+                const pal = DENS_FRENTE_PALETA[fi % DENS_FRENTE_PALETA.length];
+                const fRows = data.filter(r => r.frente === frente);
+                const fCode = fRows[0].fCode;
+                // Classificação por viagem individual (não por maioria) — cada viagem já traz
+                // seu próprio camProp/camTerc calculado a partir de Frota Motriz + Tipo Proprietário.
+                const owners = [
+                    { key: 'PRÓPRIO', rows: fRows.filter(r => r.camProp && !r.camTerc) },
+                    { key: 'TERCEIRO', rows: fRows.filter(r => r.camTerc) }
+                ];
+                owners.forEach(owner => {
+                    if (!owner.rows.length) return;
+                    const tipos = [...new Set(owner.rows.map(r => r.tipoNorm))].sort();
+                    tipos.forEach((tipo, ti) => {
+                        series.push({
+                            label: 'F' + fCode + ' ' + tipo + ' - ' + owner.key,  // display
+                            aggKey: 'F' + fCode + ' ' + tipo + ' ' + owner.key,   // chave interna do agg (inclui ownership)
+                            frente, fCode, tipo, owner: owner.key,
+                            cor: ti === 0 ? pal.base : pal.alt,
+                            rows: owner.rows.filter(r => r.tipoNorm === tipo)
+                        });
+                    });
+                });
+            });
+
+            // Agrega hora × aggKey → {ps, v}  (aggKey agora inclui ownership real da viagem)
+            const agg = new Map();
+            data.forEach(r => {
+                const ownerK = r.camTerc ? 'TERCEIRO' : (r.camProp ? 'PRÓPRIO' : 'PRÓPRIO');
+                const k = r.hora + '||F' + r.fCode + ' ' + r.tipoNorm + ' ' + ownerK;
+                if (!agg.has(k)) agg.set(k, { ps: 0, v: 0 });
+                const e = agg.get(k); e.ps += r.peso; e.v += 1;
+            });
+            const getDens = (h, aggKey) => {
+                const e = agg.get(h + '||' + aggKey);
+                return (e && e.v > 0) ? parseFloat((e.ps / e.v).toFixed(1)) : null;
+            };
+
+            const horasComDado = HORAS_DESC.filter(h => series.some(s => getDens(h, s.aggKey) !== null));
+            const allD = []; horasComDado.forEach(h => series.forEach(s => { const d = getDens(h, s.aggKey); if (d) allD.push(d); }));
+            const maxD = allD.length ? Math.max(...allD) : 100;
+            const BAR_W = 100; // px largura máxima da barra
+
+            // ── KPI strip ──────────────────────────────────────────────────────
+            const kpiWrap = document.createElement('div');
+            kpiWrap.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;';
+            series.forEach(s => {
+                const tp = s.rows.reduce((a, r) => a + r.peso, 0), tv = s.rows.length;
+                const td = tv > 0 ? tp / tv : 0;
+                const cls = td >= DENS_META_BOM ? 'densidade-otimo' : td >= DENS_META_MED ? 'densidade-mediano' : 'densidade-ruim';
+                const kpi = document.createElement('div');
+                kpi.className = 'kpi-card ' + cls;
+                kpi.style.cssText = 'flex:1;min-width:130px;border-left:4px solid ' + s.cor + ';cursor:pointer;';
+                kpi.innerHTML = '<small>' + s.label + '</small>'
+                    + '<span class="val">' + td.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                    + ' <span style="font-size:.7rem">t/vg</span></span>'
+                    + '<div class="meta-info">' + tv + 'vg · ' + tp.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + 't</div>'
+                    + '<div style="font-size:10px;color:#64748b;margin-top:4px;">🔍 Ver viagens</div>';
+                (function(capturedRows, capturedLabel) {
+                    kpi.addEventListener('click', function() { openDensidadeModal(capturedLabel, capturedRows); });
+                })(s.rows, s.label);
+                kpiWrap.appendChild(kpi);
+            });
+            cont.appendChild(kpiWrap);
+
+            // ── Card com título e legenda ───────────────────────────────────────
+            const card = document.createElement('div');
+            card.className = 'balance-card';
+            card.style.cssText = 'padding:24px;';
+
+            const legItems = series.map(s =>
+                '<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#334155;margin-right:14px;white-space:nowrap;">'
+                + '<span style="display:inline-block;width:11px;height:11px;border-radius:2px;background:' + s.cor + ';flex-shrink:0;"></span>' + s.label + '</span>'
+            ).join('');
+
+            card.innerHTML =
+                '<div class="balance-card-title" style="border-left-color:#40800c;margin-bottom:8px;">'
+                + '📊 Densidade de Carga por Frente · Hora Agrícola 06:00→05:59 · ' + dayLabel + '</div>'
+                + '<div style="font-size:11px;color:#64748b;margin-bottom:10px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">'
+                + '<span style="font-weight:700;color:#16a34a;">● Meta ≥' + DENS_META_BOM + 't</span>'
+                + '<span style="font-weight:700;color:#f59e0b;">● Mediano ≥' + DENS_META_MED + 't</span>'
+                + '<span style="font-weight:700;color:#ef4444;">● Abaixo &lt;' + DENS_META_MED + 't</span>'
+                + '<span style="font-size:10px;color:#94a3b8;margin-left:auto;">↑ Mais recente no topo</span>'
+                + '</div>'
+                + '<div style="margin-bottom:16px;line-height:2.2;">' + legItems + '</div>'
+                + '<div id="dens-blocos"></div>';
+            cont.appendChild(card);
+
+            const grid = card.querySelector('#dens-blocos');
+
+            // ── Um card por hora ───────────────────────────────────────────────
+            horasComDado.forEach(h => {
+                const seriesNaHora = series.filter(s => getDens(h, s.aggKey) !== null);
+                const medHora = seriesNaHora.reduce((sum, s) => sum + getDens(h, s.aggKey), 0) / seriesNaHora.length;
+                const medCor = medHora >= DENS_META_BOM ? '#16a34a' : medHora >= DENS_META_MED ? '#f59e0b' : '#ef4444';
+                const medEmj = medHora >= DENS_META_BOM ? '🟢' : medHora >= DENS_META_MED ? '🟡' : '🔴';
+
+                // Container do bloco hora
+                const bloco = document.createElement('div');
+                bloco.style.cssText = 'display:flex;align-items:stretch;margin-bottom:8px;'
+                    + 'border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;';
+
+                // Coluna esquerda: hora + média
+                const horaCol = document.createElement('div');
+                horaCol.style.cssText = 'min-width:68px;max-width:68px;flex-shrink:0;'
+                    + 'background:#1e293b;color:#fff;'
+                    + 'display:flex;flex-direction:column;align-items:center;justify-content:center;'
+                    + 'padding:10px 4px;gap:3px;';
+                horaCol.innerHTML =
+                    '<div style="font-size:16px;font-weight:900;line-height:1;">' + String(h).padStart(2, '0') + 'h</div>'
+                    + '<div style="font-size:11px;font-weight:800;color:' + medCor + ';margin-top:5px;">' + medHora.toFixed(1) + 't</div>'
+                    + '<div style="font-size:11px;line-height:1;">' + medEmj + '</div>';
+
+                // Coluna direita: frentes em grid (não em flex-wrap solto — com
+                // flex-wrap + min-width os cartões ficavam com largura elástica e o
+                // rótulo em white-space:nowrap "vazava" para fora da caixa, invadindo
+                // o cartão vizinho. Isso é o que deixava os dados ilegíveis nas capturas
+                // de tela: várias frentes com nomes longos, texto sobreposto. Com um
+                // grid de colunas de largura fixa + rótulo permitido a quebrar em 2
+                // linhas, cada cartão fica contido e legível mesmo com 10+ frentes na
+                // mesma hora.
+                const frentesRow = document.createElement('div');
+                frentesRow.className = 'dens-frentes-row';
+
+                seriesNaHora.forEach(s => {
+                    const d = getDens(h, s.aggKey);
+                    const barPx = Math.max(4, Math.round((d / maxD) * BAR_W));
+                    const barCor = d >= DENS_META_BOM ? s.cor : d >= DENS_META_MED ? '#f59e0b' : '#ef4444';
+                    const e = agg.get(h + '||' + s.aggKey);
+                    const viag = e ? e.v : 0;
+
+                    // Mini-card por frente
+                    const fc = document.createElement('div');
+                    fc.className = 'dens-frente-card';
+                    fc.style.borderLeftColor = s.cor;
+                    fc.title = s.label + ' — ' + d.toFixed(1) + ' t (' + viag + ' viagens)';
+
+                    // Linha: label
+                    fc.innerHTML =
+                        '<div class="dens-frente-label">' + s.label + '</div>'
+                        // Barra + valor dentro
+                        + '<div style="display:flex;align-items:center;gap:6px;">'
+                        + '<div style="width:' + BAR_W + 'px;flex-shrink:0;background:#f1f5f9;border-radius:4px;height:20px;overflow:hidden;">'
+                        + '<div style="width:' + barPx + 'px;height:100%;background:' + barCor + ';border-radius:4px;'
+                        + 'display:flex;align-items:center;justify-content:flex-end;padding-right:4px;">'
+                        + '<span style="color:#fff;font-size:10px;font-weight:900;text-shadow:0 1px 2px rgba(0,0,0,.5);">' + d.toFixed(0) + '</span>'
+                        + '</div></div>'
+                        + '<div style="display:flex;flex-direction:column;line-height:1.2;">'
+                        + '<span style="font-size:11px;font-weight:800;color:#1e293b;">' + d.toFixed(1) + ' t</span>'
+                        + '<span style="font-size:10px;color:#94a3b8;font-weight:600;">' + viag + 'vg</span>'
+                        + '</div></div>';
+
+                    frentesRow.appendChild(fc);
+                });
+
+                bloco.appendChild(horaCol);
+                bloco.appendChild(frentesRow);
+                grid.appendChild(bloco);
+            });
+        }
+
+
+        // ═══════════════════════════════════════════════════════════════
+        // ── ABA CONTROLE DE CARGA — linha próprio × terceiro por hora ──
+        // ═══════════════════════════════════════════════════════════════
+        let controleSelectedDay = 'TODOS';
+
+        // ── Meta de Moagem Diária (t) — editável, persistida até o usuário alterar ──
+        const METAMOAGEM_KEY = 'metaMoagemDiariaV1';
+        let metaMoagemDiaria = 19500;
+        (function loadMetaMoagemDiaria() {
+            try {
+                const saved = localStorage.getItem(METAMOAGEM_KEY);
+                if (saved !== null) {
+                    const v = parseFloat(saved);
+                    if (!isNaN(v) && v > 0) metaMoagemDiaria = v;
+                }
+            } catch (_) { /* localStorage indisponível — mantém padrão 19500 */ }
+        })();
+        function setMetaMoagemDiaria(valor) {
+            const v = parseFloat(String(valor).replace(',', '.'));
+            if (isNaN(v) || v <= 0) return;
+            metaMoagemDiaria = v;
+            try { localStorage.setItem(METAMOAGEM_KEY, String(v)); } catch (_) { }
+            syncSaveField('metaMoagemDiaria', v);
+            renderControle();
+            updateProjecaoMoagem();
+        }
+
+        function renderControleTimeline() {
+            const tl = document.getElementById('controle-timeline');
+            if (!tl) return;
+            tl.innerHTML = '';
+            const dias = [...new Set(horariaRaw.map(r => r.dia))].filter(Boolean).sort();
+            const addBtn = (id, label) => {
+                const b = document.createElement('div');
+                b.className = 'day-badge' + (controleSelectedDay === id ? ' active' : '');
+                b.innerText = label;
+                b.onclick = () => { controleSelectedDay = id; renderControleTimeline(); renderControle(); };
+                tl.appendChild(b);
+            };
+            addBtn('TODOS', 'SAFRA COMPLETA');
+            dias.forEach(d => { const p = d.split('-'); addBtn(d, `${p[2]}/${p[1]}`); });
+        }
+
+        function renderControle() {
+            if (!balanceLoaded) return;
+            renderControleTimeline();
+
+            const cont = document.getElementById('controle-content');
+            if (!cont) return;
+            cont.innerHTML = '';
+
+            const dados = controleSelectedDay === 'TODOS'
+                ? horariaRaw
+                : horariaRaw.filter(r => r.dia === controleSelectedDay);
+
+            if (!dados.length) {
+                cont.innerHTML = '<div style="text-align:center;padding:60px;color:#94a3b8;font-weight:700;">⏳ Nenhum dado. Carregue o Producao.xlsx.</div>';
+                return;
+            }
+
+            const HORAS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5];
+            const LABELS = HORAS.map(h => String(h).padStart(2, '0') + 'h');
+            const metaProp = 60, metaTerc = 40;
+
+            // Agrega por hora × ownership
+            const aggH = {};
+            HORAS.forEach(h => { aggH[h] = { proprio: 0, terceiro: 0 }; });
+            dados.forEach(r => {
+                if (aggH[r.hora] !== undefined)
+                    aggH[r.hora][r.ownership] = (aggH[r.hora][r.ownership] || 0) + r.peso;
+            });
+
+            // Arrays hora a hora
+            const propVals = [], tercVals = [], pctPropHora = [], pctTercHora = [];
+            let acProp = 0, acTerc = 0;
+            HORAS.forEach(h => {
+                const p = aggH[h].proprio;
+                const t = aggH[h].terceiro;
+                acProp += p; acTerc += t;
+                propVals.push(parseFloat(p.toFixed(3)));
+                tercVals.push(parseFloat(t.toFixed(3)));
+                const tot = p + t;
+                pctPropHora.push(tot > 0 ? parseFloat((p / tot * 100).toFixed(1)) : null);
+                pctTercHora.push(tot > 0 ? parseFloat((t / tot * 100).toFixed(1)) : null);
+            });
+
+            const totalProp = acProp, totalTerc = acTerc, totalGeral = acProp + acTerc;
+            const pctPropTotal = totalGeral > 0 ? totalProp / totalGeral * 100 : 0;
+            const pctTercTotal = totalGeral > 0 ? totalTerc / totalGeral * 100 : 0;
+            const propOk = pctPropTotal >= metaProp;
+            const tercOk = pctTercTotal <= metaTerc; // Terceiro ACIMA da meta é ruim (custo maior) — invertido de propósito
+
+            // Horas com gargalo (próprio < meta)
+            const horasGargalo = HORAS.filter((_, i) => pctPropHora[i] !== null && pctPropHora[i] < metaProp);
+            const nGargalo = horasGargalo.length;
+            const nHorasComDado = pctPropHora.filter(v => v !== null).length;
+
+            const dayLabel = controleSelectedDay === 'TODOS' ? 'Safra completa' :
+                (() => { const p = controleSelectedDay.split('-'); return `${p[2]}/${p[1]}/${p[0]}`; })();
+
+            // ── KPI strip ────────────────────────────────────────────────────
+            const kpiDiv = document.createElement('div');
+            kpiDiv.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;';
+            kpiDiv.innerHTML = `
+            <div class="kpi-card" style="flex:1;min-width:150px;border-bottom-color:#40800c;${propOk ? 'background:#f0fdf4;' : 'background:#fef2f2;'}">
+                <small>🚛 PRÓPRIO (31)</small>
+                <span class="val" style="color:#40800c;">${totalProp.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} t</span>
+                <div class="meta-info">${pctPropTotal.toFixed(1)}% do total · Meta ${metaProp}%
+                    <span style="color:${propOk ? '#16a34a' : '#dc2626'};font-weight:800;"> ${propOk ? '✅ OK' : '❌ ABAIXO'}</span>
+                </div>
+            </div>
+            <div class="kpi-card terc" style="flex:1;min-width:150px;${tercOk ? 'background:#fffbeb;' : ''}">
+                <small>🚛 TERCEIRO (91)</small>
+                <span class="val" style="color:#e9a23b;">${totalTerc.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} t</span>
+                <div class="meta-info">${pctTercTotal.toFixed(1)}% do total · Meta ${metaTerc}%
+                    <span style="color:${tercOk ? '#16a34a' : '#dc2626'};font-weight:800;"> ${tercOk ? '✅ OK' : '❌ ACIMA'}</span>
+                </div>
+            </div>
+            <div class="kpi-card" style="flex:1;min-width:150px;background:#f0fdf4;border-bottom-color:#22c55e;">
+                <small>📦 TOTAL GERAL</small>
+                <span class="val" style="color:#16a34a;">${totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} t</span>
+                <div class="meta-info">${dayLabel}</div>
+            </div>
+            <div class="kpi-card" style="flex:1;min-width:150px;background:${nGargalo > 0 ? '#fef2f2' : '#f0fdf4'};border-bottom-color:${nGargalo > 0 ? '#ef4444' : '#22c55e'};">
+                <small>⚠️ HORAS ABAIXO DA META</small>
+                <span class="val" style="color:${nGargalo > 0 ? '#dc2626' : '#16a34a'};">${nGargalo} <span style="font-size:.8rem">de ${nHorasComDado}h</span></span>
+                <div class="meta-info">${nGargalo > 0 ? 'Próprio < ' + metaProp + '% nessas horas' : 'Todas as horas dentro da meta'}</div>
+            </div>`;
+            cont.appendChild(kpiDiv);
+
+            // ── Card: gráfico principal — % por hora + meta ───────────────────
+            const card1 = document.createElement('div');
+            card1.className = 'balance-card';
+            card1.style.cssText = 'padding:24px;margin-bottom:16px;';
+            card1.innerHTML = `
+            <div class="balance-card-title" style="border-left-color:#40800c;margin-bottom:12px;">
+                📈 % Mix Próprio × Terceiro por Hora · ${dayLabel}
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-bottom:14px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;">
+                <span style="display:flex;align-items:center;gap:6px;font-weight:700;color:#40800c;">
+                    <span style="display:inline-block;width:20px;height:3px;background:#40800c;border-radius:2px;"></span>% Próprio
+                </span>
+                <span style="display:flex;align-items:center;gap:6px;font-weight:700;color:#e9a23b;">
+                    <span style="display:inline-block;width:20px;height:3px;background:#e9a23b;border-radius:2px;"></span>% Terceiro
+                </span>
+                <span style="font-size:10px;color:#94a3b8;font-style:italic;margin-left:auto;">
+                    Interseção = troca de liderança
+                </span>
+            </div>
+            <div style="position:relative;height:360px;">
+                <canvas id="controle-pct-canvas"></canvas>
+            </div>`;
+            cont.appendChild(card1);
+
+            // ── Card: barras volume por hora ──────────────────────────────────
+            const metaHoraTotal = metaMoagemDiaria / 24;
+            const metaHoraProp = metaHoraTotal * (metaProp / 100);
+            const metaHoraTerc = metaHoraTotal * (metaTerc / 100);
+
+            const card2 = document.createElement('div');
+            card2.className = 'balance-card';
+            card2.style.cssText = 'padding:24px;margin-bottom:16px;';
+            card2.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                <div class="balance-card-title" style="border-left-color:#6366f1;margin:0;">
+                    📊 Volume por Hora · Próprio vs Terceiro (t)
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <label for="input-meta-moagem" style="font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;">🎯 Meta Moagem/Dia</label>
+                    <input id="input-meta-moagem" type="number" min="1" step="100" value="${metaMoagemDiaria}"
+                        onchange="setMetaMoagemDiaria(this.value)"
+                        style="width:100px;padding:6px 10px;border:2px solid #6366f1;border-radius:8px;font-weight:800;font-size:13px;color:#1e293b;text-align:right;">
+                    <span style="font-size:11px;font-weight:800;color:#6366f1;">t</span>
+                </div>
+            </div>
+            <div style="font-size:10px;color:#94a3b8;margin:6px 0 10px;">
+                Linhas tracejadas = meta por hora (${metaHoraProp.toFixed(0)}t Próprio + ${metaHoraTerc.toFixed(0)}t Terceiro), calculada a partir da Meta Moagem/Dia ÷ 24h
+            </div>
+            <div style="position:relative;height:240px;">
+                <canvas id="controle-bar-canvas"></canvas>
+            </div>`;
+            cont.appendChild(card2);
+
+            // ── Card gargalos ─────────────────────────────────────────────────
+            const gargCard = document.createElement('div');
+            gargCard.className = 'balance-card';
+            gargCard.style.cssText = 'padding:24px;';
+            gargCard.innerHTML = '<div class="balance-card-title" style="border-left-color:#f59e0b;margin-bottom:14px;">⚠️ Gargalos por Hora — Próprio abaixo de ' + metaProp + '%</div>'
+                + '<div id="controle-gargalos" style="display:flex;flex-direction:column;gap:6px;"></div>';
+            cont.appendChild(gargCard);
+
+            const gargDiv = gargCard.querySelector('#controle-gargalos');
+            let temGargalo = false;
+            HORAS.forEach((h, i) => {
+                const p = propVals[i], t = tercVals[i], tot = p + t;
+                if (tot <= 0) return;
+                const pP = pctPropHora[i];
+                if (pP >= metaProp) return;
+                temGargalo = true;
+                const deficit = metaProp - pP;
+                const row = document.createElement('div');
+                row.style.cssText = 'display:grid;grid-template-columns:48px 1fr auto auto auto;'
+                    + 'align-items:center;gap:10px;padding:10px 14px;'
+                    + 'background:#fef2f2;border-radius:10px;border-left:4px solid #ef4444;';
+                row.innerHTML =
+                    `<span style="font-size:16px;font-weight:900;color:#1e293b;">${String(h).padStart(2, '0')}h</span>`
+                    + `<div>`
+                    + `<div style="background:#e2e8f0;border-radius:4px;height:18px;overflow:hidden;position:relative;">`
+                    // barra próprio
+                    + `<div style="position:absolute;left:0;top:0;height:100%;width:${pP.toFixed(0)}%;background:#40800c;border-radius:4px 0 0 4px;display:flex;align-items:center;padding-left:6px;">`
+                    + `<span style="color:#fff;font-size:10px;font-weight:900;">${pP.toFixed(0)}%</span></div>`
+                    // barra terceiro (resto)
+                    + `<div style="position:absolute;right:0;top:0;height:100%;width:${(100 - pP).toFixed(0)}%;background:#e9a23b;border-radius:0 4px 4px 0;display:flex;align-items:center;justify-content:flex-end;padding-right:6px;">`
+                    + `<span style="color:#fff;font-size:10px;font-weight:900;">${(100 - pP).toFixed(0)}%</span></div>`
+                    + `</div>`
+                    + `<div style="font-size:10px;color:#dc2626;font-weight:700;margin-top:3px;">Déficit: ${deficit.toFixed(1)} p.p. abaixo da meta</div>`
+                    + `</div>`
+                    + `<span style="font-size:12px;font-weight:800;color:#40800c;white-space:nowrap;">Próprio: ${p.toFixed(3)}t</span>`
+                    + `<span style="font-size:12px;font-weight:800;color:#e9a23b;white-space:nowrap;">Terceiro: ${t.toFixed(3)}t</span>`
+                    + `<span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:20px;background:#fee2e2;color:#dc2626;white-space:nowrap;">-${deficit.toFixed(1)}p.p.</span>`;
+                gargDiv.appendChild(row);
+            });
+            if (!temGargalo) {
+                gargDiv.innerHTML = '<div style="text-align:center;padding:24px;color:#16a34a;font-weight:700;font-size:13px;">✅ Nenhum gargalo identificado no período.</div>';
+            }
+
+            // ── Render gráfico % ──────────────────────────────────────────────
+            setTimeout(() => {
+                const propPtColor = pctPropHora.map(v => v === null ? 'transparent' : '#40800c');
+                const tercPtColor = pctTercHora.map(v => v === null ? 'transparent' : '#e9a23b');
+
+                const ctxPct = document.getElementById('controle-pct-canvas');
+                if (!ctxPct) return;
+                if (charts['ctrl-pct']) { charts['ctrl-pct'].destroy(); delete charts['ctrl-pct']; }
+
+                // Plugin: linhas de meta em toneladas (Meta Moagem/Dia ÷ 24h, dividida 60% Próprio / 40% Terceiro)
+                // NOTA: usa afterDatasetsDraw (não afterDraw) de propósito. O tooltip nativo do
+                // Chart.js também desenha em afterDraw, e plugins de instância (passados em
+                // `plugins:[...]` na config do chart) são notificados DEPOIS dos plugins globais —
+                // então um afterDraw aqui pintava a linha tracejada por cima do tooltip, escondendo
+                // parte do texto. afterDatasetsDraw roda antes da fase de tooltip, então a linha
+                // fica acima das barras (como antes) mas abaixo do tooltip.
+                const metaVolumePlugin = {
+                    id: 'volMeta',
+                    afterDatasetsDraw(chart) {
+                        const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+                        const yP = y.getPixelForValue(metaHoraProp);
+                        const yT = y.getPixelForValue(metaHoraTerc);
+                        ctx.save();
+
+                        ctx.strokeStyle = '#15803d'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+                        ctx.beginPath(); ctx.moveTo(left, yP); ctx.lineTo(right, yP); ctx.stroke();
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = '#15803d';
+                        ctx.font = 'bold 10px Plus Jakarta Sans,sans-serif';
+                        ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+                        ctx.fillText('Meta Próprio ' + metaHoraProp.toFixed(0) + 't/h', right - 4, yP - 3);
+
+                        ctx.strokeStyle = '#b45309'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+                        ctx.beginPath(); ctx.moveTo(left, yT); ctx.lineTo(right, yT); ctx.stroke();
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = '#b45309';
+                        ctx.textBaseline = 'top';
+                        ctx.fillText('Meta Terceiro ' + metaHoraTerc.toFixed(0) + 't/h', right - 4, yT + 3);
+                        ctx.restore();
+                    }
+                };
+
+                charts['ctrl-pct'] = new Chart(ctxPct.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: LABELS,
+                        datasets: [
+                            {
+                                label: '% Próprio por hora',
+                                data: pctPropHora,
+                                borderColor: '#40800c',
+                                borderWidth: 2.5,
+                                pointRadius: 5,
+                                pointBackgroundColor: propPtColor,
+                                pointBorderColor: propPtColor,
+                                pointBorderWidth: 2,
+                                tension: 0.3,
+                                fill: {
+                                    target: 'origin',
+                                    above: 'rgba(64,128,12,0.12)'
+                                },
+                                spanGaps: true,
+                                yAxisID: 'y'
+                            },
+                            {
+                                label: '% Terceiro por hora',
+                                data: pctTercHora,
+                                borderColor: '#e9a23b',
+                                borderWidth: 2,
+                                pointRadius: 4,
+                                pointBackgroundColor: '#e9a23b',
+                                tension: 0.3,
+                                fill: false,
+                                spanGaps: true,
+                                yAxisID: 'y'
+                            }
+                        ]
+                    },
+                    plugins: [ChartDataLabels],
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        layout: { padding: { top: 20, right: 60 } },
+                        interaction: { mode: 'index', intersect: false },
+                        scales: {
+                            x: {
+                                grid: { display: false },
+                                ticks: { font: { size: 10, weight: '700' }, color: corDeTextoParaGrafico(), maxRotation: 0 }
+                            },
+                            y: {
+                                min: 0, max: 100,
+                                grid: { color: getToken('--chart-grid', '#f1f5f9') },
+                                ticks: {
+                                    font: { size: 10 }, color: corDeTextoParaGrafico(),
+                                    callback: v => v + '%',
+                                    stepSize: 10
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                display: true, position: 'bottom',
+                                labels: { font: { size: 11, weight: '700' }, padding: 16, usePointStyle: true, color: corDeTextoParaGrafico() }
+                            },
+                            tooltip: {
+                                backgroundColor: '#1e293b',
+                                titleFont: { size: 12, weight: '800' },
+                                bodyFont: { size: 11 }, padding: 12,
+                                callbacks: {
+                                    title: items => `🕐 ${items[0].label}`,
+                                    label: ctx => {
+                                        const v = ctx.parsed.y;
+                                        if (v === null) return null;
+                                        return ` ${ctx.dataset.label}: ${v.toFixed(1)}%`;
+                                    },
+                                    afterBody: items => {
+                                        const i = items[0].dataIndex;
+                                        const p = propVals[i], t = tercVals[i];
+                                        if (p + t <= 0) return [];
+                                        return ['─────────────────',
+                                            ` Próprio: ${p.toFixed(3)}t`,
+                                            ` Terceiro: ${t.toFixed(3)}t`,
+                                            ` Total hora: ${(p + t).toFixed(3)}t`];
+                                    },
+                                    filter: item => item.parsed.y !== null
+                                }
+                            },
+                            datalabels: {
+                                // ANTES: só desenhava quando datasetIndex === 0 (Próprio), então o
+                                // dataset "% Terceiro por hora" nunca ganhava rótulo. Agora ambos os
+                                // datasets mostram o valor, com âncora/alinhamento opostos (Próprio
+                                // acima do ponto, Terceiro abaixo) para não sobrepor os textos quando
+                                // as duas linhas ficam próximas.
+                                display: ctx => ctx.dataset.data[ctx.dataIndex] !== null,
+                                formatter: v => v.toFixed(0) + '%',
+                                color: ctx => ctx.datasetIndex === 0 ? '#15803d' : '#b45309',
+                                font: { size: 9, weight: '800' },
+                                anchor: ctx => ctx.datasetIndex === 0 ? 'top' : 'bottom',
+                                align: ctx => ctx.datasetIndex === 0 ? 'top' : 'bottom',
+                                offset: 2
+                            }
+                        }
+                    }
+                });
+
+                // ── Render gráfico barras volume ──────────────────────────────
+                const ctxBar = document.getElementById('controle-bar-canvas');
+                if (!ctxBar) return;
+                if (charts['ctrl-bar']) { charts['ctrl-bar'].destroy(); delete charts['ctrl-bar']; }
+
+                charts['ctrl-bar'] = new Chart(ctxBar.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: LABELS,
+                        datasets: [
+                            {
+                                label: 'Próprio (t)',
+                                data: propVals,
+                                backgroundColor: 'rgba(64,128,12,0.5)',
+                                borderColor: '#40800c',
+                                borderWidth: 1, borderRadius: 3
+                            },
+                            {
+                                label: 'Terceiro (t)',
+                                data: tercVals,
+                                backgroundColor: 'rgba(233,162,59,0.45)',
+                                borderColor: '#e9a23b',
+                                borderWidth: 1, borderRadius: 3
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: {
+                                display: true, position: 'bottom',
+                                labels: { font: { size: 11, weight: '700' }, padding: 14, usePointStyle: true, color: corDeTextoParaGrafico() }
+                            },
+                            tooltip: {
+                                backgroundColor: '#1e293b', titleFont: { size: 12, weight: '800' },
+                                bodyFont: { size: 11 }, padding: 10,
+                                callbacks: {
+                                    title: items => `🕐 ${items[0].label}`,
+                                    label: ctx => {
+                                        const v = ctx.parsed.y;
+                                        return v > 0 ? ` ${ctx.dataset.label}: ${v.toFixed(3)}t` : null;
+                                    },
+                                    afterBody: () => [
+                                        '─────────────────',
+                                        `🎯 Meta hora: ${metaHoraProp.toFixed(0)}t Próprio + ${metaHoraTerc.toFixed(0)}t Terceiro`
+                                    ],
+                                    filter: item => item.parsed.y > 0
+                                }
+                            },
+                            datalabels: {
+                                display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
+                                formatter: v => v.toFixed(2),
+                                color: corDeTextoParaGrafico(),
+                                font: { size: 8, weight: '800' },
+                                anchor: 'center', align: 'center', clamp: true
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { display: false },
+                                ticks: { font: { size: 10, weight: '700' }, color: corDeTextoParaGrafico(), maxRotation: 0 }
+                            },
+                            y: {
+                                grid: { color: getToken('--chart-grid', '#f1f5f9') },
+                                suggestedMax: Math.max(...propVals, ...tercVals, metaHoraProp, metaHoraTerc) * 1.15,
+                                ticks: { font: { size: 10 }, color: corDeTextoParaGrafico(), callback: v => v + 't' }
+                            }
+                        }
+                    },
+                    plugins: [metaVolumePlugin, ChartDataLabels]
+                });
+            }, 60);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+
+        //  PERSISTÊNCIA DE PASTA — File System Access API + IndexedDB
+        // ═══════════════════════════════════════════════════════════════
+        const IDB_NAME = 'agrosync_db', IDB_STORE = 'handles', IDB_KEY = 'lastDir';
+
+        function openIDB() {
+            return new Promise((res, rej) => {
+                const req = indexedDB.open(IDB_NAME, 1);
+                req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+                req.onsuccess = e => res(e.target.result);
+                req.onerror = () => rej(req.error);
+            });
+        }
+        async function saveHandle(handle) {
+            try {
+                const db = await openIDB();
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).put(handle, IDB_KEY);
+            } catch (_) { }
+        }
+        async function loadHandle() {
+            try {
+                const db = await openIDB();
+                return await new Promise((res, rej) => {
+                    const tx = db.transaction(IDB_STORE, 'readonly');
+                    const req = tx.objectStore(IDB_STORE).get(IDB_KEY);
+                    req.onsuccess = () => res(req.result || null);
+                    req.onerror = () => rej(req.error);
+                });
+            } catch (_) { return null; }
+        }
+
+        // NOVO: o app só reconhecia o arquivo literal "producao.xlsx" — uma pasta
+        // com "Producao.csv" (ou "Produção.csv"/"Produção.xlsx", com cedilha/acento)
+        // era simplesmente ignorada: results.producao ficava null, processFiles()
+        // nunca chamava processBalanceData(), e todo o painel mostrava 0 t / "Aguardando
+        // 1ª hora fechada" — não por erro de cálculo, mas por o arquivo nunca ter
+        // sido carregado. isProducaoFile/isSolinftecFile aceitam .xlsx, .xls e .csv,
+        // com ou sem acento no nome.
+        function normalizeFileName(name) {
+            return String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+        }
+        function isProducaoFile(name) {
+            const n = normalizeFileName(name);
+            return n === 'producao.xlsx' || n === 'producao.csv' || n === 'producao.xls';
+        }
+        function isSolinftecFile(name) {
+            const n = normalizeFileName(name);
+            return n === 'solinftec.xlsx' || n === 'solinftec.csv' || n === 'solinftec.xls';
+        }
+        function isPotencialFile(name) {
+            const n = normalizeFileName(name);
+            return n === 'potencial.xlsx' || n === 'potencial.csv' || n === 'potencial.xls';
+        }
+        function isMetasFile(name) {
+            const n = normalizeFileName(name);
+            return n === 'metas.xlsx' || n === 'metas.csv' || n === 'metas.xls';
+        }
+
+        // Lê e processa os arquivos de um FileSystemDirectoryHandle
+        async function loadFromDirHandle(dirHandle) {
+            const results = { producao: null, solinftec: null, potencial: null, metas: null, name: dirHandle.name };
+            consumoResetArquivos(); // novo módulo CONSUMO: limpa arquivos anteriores
+            for await (const [name, fh] of dirHandle.entries()) {
+                if (fh.kind !== 'file') continue;
+                if (isProducaoFile(name)) results.producao = await fh.getFile();
+                if (isSolinftecFile(name)) results.solinftec = await fh.getFile();
+                if (isPotencialFile(name)) results.potencial = await fh.getFile();
+                if (isMetasFile(name)) results.metas = await fh.getFile();
+                const tipoConsumo = consumoIdentificarArquivo(name); // novo módulo CONSUMO
+                if (tipoConsumo) consumoArquivos[tipoConsumo] = await fh.getFile();
+            }
+            return results;
+        }
+
+        function showDashboard(folderName) {
+            document.getElementById('folderInfo').style.display = 'flex';
+            document.getElementById('folderPath').innerText = folderName;
+            document.getElementById('uploadPrompt').classList.add('hidden');
+            const startupBg = document.getElementById('startup-bg');
+            if(startupBg) startupBg.style.display = 'none';
+            document.getElementById('dashboardContent').classList.remove('hidden');
+        }
+
+        // CORRIGIDO: readXlsxFile agora força raw:true na leitura. Sem isso, quando
+        // o arquivo é texto (.csv, ou .csv salvo/renomeado como .xlsx), o PRÓPRIO
+        // SheetJS já tenta "adivinhar" o tipo de cada célula antes do parseNum sequer
+        // rodar — e ele lê "3,96" (formato BR) removendo a vírgula e devolvendo o
+        // número 396 (dez vezes maior, e ainda errado). Isso é diferente do bug do
+        // parseNum: ali a string chegava certa e o parseFloat cortava a casa decimal;
+        // aqui o valor NUNCA chega como string — o SheetJS já entrega um Number
+        // errado, então nenhum tratamento de vírgula no parseNum resolveria sozinho.
+        // Com raw:true, célula de CSV/texto fica como string literal ("3,96"), e o
+        // parseNum (já corrigido acima) faz a conversão correta. Em .xlsx binário
+        // genuíno isso não muda nada — células numéricas já chegam tipadas como
+        // Number, raw:true não interfere nelas.
+        function readXlsxFile(file, isBalance) {
+            return new Promise((res) => {
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const data = new Uint8Array(evt.target.result);
+                    const wb = XLSX.read(data, { type: 'array', raw: true });
+                    const json = isBalance
+                        ? XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+                        : XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+                    res(json);
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        // Lê uma aba específica pelo nome (por posição, do arquivo binário) —
+        // necessário para Potencial.xlsx, cuja aba de cálculo ("Planilha1")
+        // não é a primeira do arquivo (a 1ª é "Potencial", só disponibilidades
+        // fixas). Se a aba pedida não existir, cai para a última aba do
+        // arquivo (mais robusto a pequenas variações de nome/acentuação).
+        function readXlsxNamedSheet(file, sheetName) {
+            return new Promise((res) => {
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const data = new Uint8Array(evt.target.result);
+                    const wb = XLSX.read(data, { type: 'array', raw: true });
+                    const nomeReal = wb.SheetNames.find(n => normalizeFileName(n) === normalizeFileName(sheetName))
+                        || wb.SheetNames[wb.SheetNames.length - 1];
+                    const json = XLSX.utils.sheet_to_json(wb.Sheets[nomeReal], { header: 1, defval: '' });
+                    res(json);
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        async function processFiles(producaoFile, solinftecFile, potencialFile, metasFile) {
+            try {
+                if (producaoFile) {
+                    const json = await readXlsxFile(producaoFile, true);
+                    processBalanceData(json);
+                }
+            } catch (err) {
+                console.error('[processFiles] Erro ao processar Producao.xlsx:', err);
+                showToast('⚠️ Erro ao processar Producao.xlsx: ' + err.message, '#dc2626');
+            }
+            try {
+                if (solinftecFile) {
+                    const json = await readXlsxFile(solinftecFile, false);
+                    processSolinftecData(json);
+                }
+            } catch (err) {
+                console.error('[processFiles] Erro ao processar Solinftec.xlsx:', err);
+                showToast('⚠️ Erro ao processar Solinftec.xlsx: ' + err.message, '#dc2626');
+            }
+            try {
+                if (potencialFile) {
+                    const json = await readXlsxNamedSheet(potencialFile, 'Planilha1');
+                    processPotencialData(json);
+                }
+            } catch (err) {
+                console.error('[processFiles] Erro ao processar Potencial.xlsx:', err);
+                showToast('⚠️ Erro ao processar Potencial.xlsx: ' + err.message, '#dc2626');
+            }
+            try {
+                if (metasFile) {
+                    const json = await readXlsxNamedSheet(metasFile, 'Planilha1');
+                    processMetasData(json);
+                }
+            } catch (err) {
+                console.error('[processFiles] Erro ao processar METAS.xlsx:', err);
+                showToast('⚠️ Erro ao processar METAS.xlsx: ' + err.message, '#dc2626');
+            }
+            updateStatus();
+            renderRelProducao();
+        }
+
+        function setAutoBanner(msg, done = false) {
+            const banner = document.getElementById('auto-load-banner');
+            const msgEl = document.getElementById('auto-load-msg');
+            const spinner = document.getElementById('auto-load-spinner');
+            const dismiss = document.getElementById('auto-load-dismiss');
+            banner.style.display = 'flex';
+            banner.style.cursor = 'default';
+            banner.onclick = null;
+            msgEl.textContent = msg;
+            spinner.style.display = done ? 'none' : 'inline-block';
+            dismiss.style.display = done ? 'inline-block' : 'none';
+        }
+        function dismissAutoBanner() {
+            const banner = document.getElementById('auto-load-banner');
+            banner.style.display = 'none';
+            banner.onclick = null;
+        }
+
+        // Lê os arquivos de um handle já autorizado e monta o dashboard
+        async function carregarHandleAutomaticamente(handle) {
+            setAutoBanner(`⏳ Lendo arquivos de "${handle.name}"…`);
+            const { producao, solinftec, potencial, metas, name } = await loadFromDirHandle(handle);
+            showDashboard(name);
+            await processFiles(producao, solinftec, potencial, metas);
+            await processConsumoFiles(); // novo módulo CONSUMO
+            espelhoPublicarTudo(name); // publica no Firestore p/ Modo Espectador
+            autoRefreshIniciar(handle, name);
+            setAutoBanner(`✅ Pasta "${name}" carregada automaticamente!`, true);
+        }
+
+        // O navegador exige um clique do usuário para reexibir a permissão da pasta
+        // quando ela não está mais concedida silenciosamente — mas isso é só UM clique
+        // no banner, não é preciso navegar e selecionar a pasta de novo.
+        let pendingAutoHandle = null;
+        function setAutoBannerPrecisaClique(handle) {
+            pendingAutoHandle = handle;
+            const banner = document.getElementById('auto-load-banner');
+            const msgEl = document.getElementById('auto-load-msg');
+            const spinner = document.getElementById('auto-load-spinner');
+            const dismiss = document.getElementById('auto-load-dismiss');
+            banner.style.display = 'flex';
+            banner.style.cursor = 'pointer';
+            msgEl.textContent = `📂 Última pasta: "${handle.name}" — clique aqui para continuar acessando automaticamente`;
+            spinner.style.display = 'none';
+            dismiss.style.display = 'none';
+            banner.onclick = confirmarAcessoAutomatico;
+        }
+        async function confirmarAcessoAutomatico() {
+            const banner = document.getElementById('auto-load-banner');
+            banner.onclick = null;
+            banner.style.cursor = 'default';
+            const handle = pendingAutoHandle;
+            pendingAutoHandle = null;
+            const hint = document.getElementById('last-folder-hint');
+            if (!handle) return;
+            try {
+                const perm = await handle.requestPermission({ mode: 'read' });
+                if (perm !== 'granted') {
+                    dismissAutoBanner();
+                    if (hint) hint.style.display = 'none';
+                    return;
+                }
+                await carregarHandleAutomaticamente(handle);
+                if (hint) hint.style.display = 'none';
+            } catch (err) {
+                console.warn('Auto-load (após clique) falhou:', err);
+                dismissAutoBanner();
+                if (hint) hint.style.display = 'none';
+            }
+        }
+
+        // Tentativa de carregamento automático ao abrir a página
+        async function tryAutoLoad() {
+            if (!('showDirectoryPicker' in window)) return; // browser não suporta FSA
+
+            const handle = await loadHandle();
+            if (!handle) return; // nenhuma pasta salva
+
+            // Mostra dica na upload zone
+            const hint = document.getElementById('last-folder-hint');
+            if (hint) hint.style.display = 'block';
+
+            try {
+                // 1) Tenta silenciosamente primeiro (sem exigir clique) — o navegador
+                //    lembra a permissão concedida em usos anteriores no mesmo dia/sessão,
+                //    então na maioria dos F5 isso já resolve sozinho.
+                const perm = await handle.queryPermission({ mode: 'read' });
+                if (perm === 'granted') {
+                    await carregarHandleAutomaticamente(handle);
+                    if (hint) hint.style.display = 'none';
+                    return;
+                }
+                // 2) Permissão não está mais concedida silenciosamente — o navegador só
+                //    reexibe o acesso mediante um gesto do usuário. Pede só 1 clique no
+                //    banner (não é preciso reabrir/renavegar a pasta).
+                setAutoBannerPrecisaClique(handle);
+            } catch (err) {
+                console.warn('Auto-load falhou:', err);
+                dismissAutoBanner();
+                if (hint) hint.style.display = 'none';
+            }
+        }
+
+        // Seleção manual de pasta
+        async function selectFolder() {
+            espelhoDesligarEspectador(); // seleção manual de pasta = este computador volta a ser "fonte"
+            // Tenta File System Access API primeiro (Chrome/Edge ≥ 86)
+            if ('showDirectoryPicker' in window) {
+                try {
+                    const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
+                    await saveHandle(dirHandle); // persiste para próxima vez
+                    setAutobanner_off();
+                    const { producao, solinftec, potencial, metas, name } = await loadFromDirHandle(dirHandle);
+                    showDashboard(name);
+                    await processFiles(producao, solinftec, potencial, metas);
+                    await processConsumoFiles(); // novo módulo CONSUMO
+                    espelhoPublicarTudo(name); // publica no Firestore p/ Modo Espectador
+                    autoRefreshIniciar(dirHandle, name);
+                    return;
+                } catch (err) {
+                    if (err.name === 'AbortError') return; // usuário cancelou
+                    console.warn('showDirectoryPicker falhou, usando fallback:', err);
+                }
+            }
+
+            // Fallback: <input webkitdirectory> (Firefox / contexto sem FSA)
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.webkitdirectory = true;
+            input.directory = true;
+            input.onchange = async (e) => {
+                const files = Array.from(e.target.files);
+                if (!files.length) return;
+                const folderName = files[0].webkitRelativePath.split('/')[0];
+                showDashboard(folderName);
+                const producaoFile = files.find(f => isProducaoFile(f.name));
+                const solinftecFile = files.find(f => isSolinftecFile(f.name));
+                const potencialFile = files.find(f => isPotencialFile(f.name));
+                const metasFile = files.find(f => isMetasFile(f.name));
+                consumoResetArquivos(); // novo módulo CONSUMO
+                files.forEach(f => {
+                    const tipoConsumo = consumoIdentificarArquivo(f.name);
+                    if (tipoConsumo && !consumoArquivos[tipoConsumo]) consumoArquivos[tipoConsumo] = f;
+                });
+                await processFiles(producaoFile, solinftecFile, potencialFile, metasFile);
+                await processConsumoFiles(); // novo módulo CONSUMO
+                espelhoPublicarTudo(folderName); // publica no Firestore p/ Modo Espectador
+            };
+            input.click();
+        }
+        function setAutobanner_off() {
+            const b = document.getElementById('auto-load-banner');
+            if (b) b.style.display = 'none';
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  AUTO-REFRESH — relê a pasta local a cada 10 minutos, sem precisar
+        //  de F5. Só funciona em quem tem a pasta mapeada (handle salvo);
+        //  no Modo Espectador não há nada a relêr, os dados chegam pelo
+        //  Firestore em tempo real.
+        // ═══════════════════════════════════════════════════════════════
+        const AUTO_REFRESH_SEGUNDOS = 10 * 60; // 10 minutos
+        let autoRefreshHandleAtual = null;
+        let autoRefreshNomeAtual = '';
+        let autoRefreshSegundosRestantes = AUTO_REFRESH_SEGUNDOS;
+        let autoRefreshTickTimer = null;
+        let autoRefreshEmAndamento = false;
+
+        function autoRefreshFormatarContagem(segundos) {
+            const m = Math.floor(segundos / 60);
+            const s = segundos % 60;
+            return m + ':' + String(s).padStart(2, '0');
+        }
+
+        function autoRefreshAtualizarBadge() {
+            const el = document.getElementById('auto-refresh-counter');
+            if (!el) return;
+            if (!autoRefreshHandleAtual) { el.style.display = 'none'; return; }
+            el.style.display = 'inline-flex';
+            el.title = 'Clique para atualizar agora · próxima atualização automática em ' + autoRefreshFormatarContagem(autoRefreshSegundosRestantes);
+            el.textContent = autoRefreshEmAndamento ? '🔄 Atualizando…' : ('🔄 ' + autoRefreshFormatarContagem(autoRefreshSegundosRestantes));
+        }
+
+        // manual=true (clique no badge) pode pedir permissão de novo se preciso;
+        // manual=false (tick automático) nunca interrompe o usuário com um prompt.
+        async function autoRefreshExecutar(manual) {
+            if (!autoRefreshHandleAtual || autoRefreshEmAndamento) return;
+            autoRefreshEmAndamento = true;
+            autoRefreshAtualizarBadge();
+            try {
+                let perm = await autoRefreshHandleAtual.queryPermission({ mode: 'read' });
+                if (perm !== 'granted') {
+                    if (!manual) { autoRefreshEmAndamento = false; autoRefreshAtualizarBadge(); return; }
+                    perm = await autoRefreshHandleAtual.requestPermission({ mode: 'read' });
+                    if (perm !== 'granted') { autoRefreshEmAndamento = false; autoRefreshAtualizarBadge(); return; }
+                }
+                const { producao, solinftec, potencial, metas, name } = await loadFromDirHandle(autoRefreshHandleAtual);
+                autoRefreshNomeAtual = name;
+                await processFiles(producao, solinftec, potencial, metas);
+                await processConsumoFiles();
+                espelhoPublicarTudo(name);
+                if (typeof showToast === 'function') showToast('🔄 Dados atualizados automaticamente', '#16a34a');
+            } catch (err) {
+                console.warn('Auto-refresh falhou:', err);
+            } finally {
+                autoRefreshEmAndamento = false;
+                autoRefreshSegundosRestantes = AUTO_REFRESH_SEGUNDOS;
+                autoRefreshAtualizarBadge();
+            }
+        }
+
+        function autoRefreshIniciar(handle, nome) {
+            autoRefreshHandleAtual = handle;
+            autoRefreshNomeAtual = nome || '';
+            autoRefreshSegundosRestantes = AUTO_REFRESH_SEGUNDOS;
+            autoRefreshAtualizarBadge();
+            if (autoRefreshTickTimer) clearInterval(autoRefreshTickTimer);
+            autoRefreshTickTimer = setInterval(() => {
+                if (!autoRefreshHandleAtual) return;
+                autoRefreshSegundosRestantes--;
+                if (autoRefreshSegundosRestantes <= 0) autoRefreshExecutar(false);
+                else autoRefreshAtualizarBadge();
+            }, 1000);
+        }
+
+        function autoRefreshForcar() { autoRefreshExecutar(true); }
+        // ═══════════════════════════════════════════════════════════════
+
+
+        // Inicia a tentativa de auto-carregamento assim que a página carrega
+        window.addEventListener('load', () => { tryAutoLoad(); });
+        // ═══════════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════════════
+        //  captureAndCopy — captura a área de dados e copia pro clipboard
+        // ═══════════════════════════════════════════════════════════════
+        async function captureAndCopy() {
+            const btn = document.getElementById('btn-screenshot');
+
+            // Captura a aba ativa dentro do dashboardContent
+            const activeTab = document.querySelector('.main-tab-content.active');
+            const wrapper = document.getElementById('dashboardContent');
+            const target = activeTab || wrapper;
+
+            if (!target || (wrapper && wrapper.classList.contains('hidden'))) {
+                showToast('⚠️ Carregue os dados antes de capturar', '#dc2626');
+                return;
+            }
+
+            btn.classList.add('capturing');
+            btn.textContent = '⏳ Capturando…';
+
+            // Oculta tabelas Detalhamento (caminhão e colhedoras) durante o screenshot
+            const tabelasDetalhamento = target.querySelectorAll('#consumo-caminhao-tabela, #consumo-colhedoras-tabela');
+            tabelasDetalhamento.forEach(el => el.style.display = 'none');
+
+            // Força os gráficos a redesenhar no tamanho atual antes de capturar —
+            // evita que o canvas fique com pixels de uma renderização antiga,
+            // que aparece "estourando" a borda do card na imagem capturada.
+            Object.values(charts).forEach(c => { try { c && c.resize(); } catch (e) { /* ignora */ } });
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+            // Guardado fora do try para o fallback de download poder usar mesmo
+            // se o clipboard falhar (ver catch abaixo).
+            let capturedBlob = null;
+
+            try {
+                // ── renderiza com html2canvas ──────────────────────────
+                const rect = target.getBoundingClientRect();
+                const targetW = Math.min(rect.width || target.scrollWidth, 1920);
+                const targetH = target.scrollHeight || rect.height;
+                const canvas = await html2canvas(target, {
+                    backgroundColor: '#ffffff',
+                    scale: 2,
+                    useCORS: true,
+                    allowTaint: true,
+                    logging: false,
+                    width: targetW,
+                    height: targetH,
+                    windowWidth: targetW,
+                    windowHeight: targetH,
+                    scrollX: 0,
+                    scrollY: -window.scrollY
+                });
+
+                const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+                capturedBlob = blob;
+
+                // ── tenta Clipboard API moderna ────────────────────────
+                let copied = false;
+                try {
+                    await navigator.clipboard.write([
+                        new ClipboardItem({ 'image/png': blob })
+                    ]);
+                    copied = true;
+                } catch (_) { /* bloqueado por permissions-policy */ }
+
+                if (copied) {
+                    showToast('📋 Copiado! Cole no WhatsApp com Ctrl+V', '#16a34a');
+                    return;
+                }
+
+                // ── fallback: img em contenteditable + execCommand ─────
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = url;
+                });
+
+                // Div invisível fora da tela com a imagem
+                const div = document.createElement('div');
+                div.setAttribute('contenteditable', 'true');
+                Object.assign(div.style, {
+                    position: 'fixed', left: '-9999px', top: '0',
+                    opacity: '0', pointerEvents: 'none'
+                });
+                div.appendChild(img);
+                document.body.appendChild(div);
+
+                // Seleciona e copia
+                const range = document.createRange();
+                range.selectNodeContents(div);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                const ok = document.execCommand('copy');
+                sel.removeAllRanges();
+                document.body.removeChild(div);
+                URL.revokeObjectURL(url);
+
+                if (ok) {
+                    showToast('📋 Copiado! Cole no WhatsApp com Ctrl+V', '#16a34a');
+                } else {
+                    throw new Error('execCommand falhou');
+                }
+
+            } catch (err) {
+                console.warn('Captura:', err);
+                // Clipboard API e execCommand('copy') exigem contexto de navegador de
+                // topo — ambos são bloqueados por permissions-policy quando a página
+                // roda dentro de um <iframe> (ex.: pré-visualização/sandbox), mesmo
+                // fora desse caso, se o navegador simplesmente negar a permissão. Como
+                // a imagem já foi gerada com sucesso pelo html2canvas antes de falhar
+                // a cópia, em vez de descartá-la baixamos o PNG automaticamente — o
+                // usuário ainda sai com o arquivo, só precisa colar manualmente.
+                if (capturedBlob) {
+                    try {
+                        const dlUrl = URL.createObjectURL(capturedBlob);
+                        const a = document.createElement('a');
+                        a.href = dlUrl;
+                        a.download = 'analise-coa-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.png';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(dlUrl), 4000);
+                        showToast('📥 Não foi possível copiar (bloqueado pelo navegador) — imagem baixada em vez disso.', '#f59e0b');
+                    } catch (dlErr) {
+                        console.warn('Fallback de download também falhou:', dlErr);
+                        showToast('❌ Permissão negada. Abra o HTML direto no navegador (não em iframe).', '#dc2626');
+                    }
+                } else {
+                    showToast('❌ Permissão negada. Abra o HTML direto no navegador (não em iframe).', '#dc2626');
+                }
+            } finally {
+                tabelasDetalhamento.forEach(el => el.style.display = '');
+                btn.classList.remove('capturing');
+                btn.innerHTML = '📸 CAPTURAR TELA';
+            }
+        }
+
+        function showToast(msg, color = '#1e293b') {
+            const toast = document.getElementById('screenshot-toast');
+            toast.textContent = msg;
+            toast.style.background = color;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3800);
+        }
+
+        // ── Exportar relatório — um PDF separado por aba ─────────────────────
+        // Cada aba vira um arquivo PDF próprio (nunca combinados), em alta
+        // resolução. Conteúdo curto = 1 página do tamanho exato do conteúdo
+        // (sem sobra de espaço em branco). Conteúdo comprido = exatamente 2
+        // páginas (nunca tenta espremer tudo em 1 só, nem faz mais que 2).
+        // A aba Rel. Produção ganha um tratamento visual "cópia fiel"
+        // (banner + cores) para casar com o relatório de referência do usuário.
+        const RP_TABS_PDF = [
+            { key: 'solinftec', id: 'main-solinftec', titulo: 'Análise Solinftec', arquivo: 'analise-solinftec' },
+            { key: 'balance', id: 'main-balance', titulo: 'Análise Balança', arquivo: 'analise-balanca' },
+            { key: 'densidade', id: 'main-densidade', titulo: 'Densidade de Carga', arquivo: 'densidade-de-carga' },
+            { key: 'controle', id: 'main-controle', titulo: 'Controle de Carga', arquivo: 'controle-de-carga' },
+            { key: 'consumo', id: 'main-consumo', titulo: 'Consumo', arquivo: 'consumo' },
+            { key: 'liberacao', id: 'main-liberacao', titulo: 'Controle de Liberação', arquivo: 'controle-de-liberacao' },
+            { key: 'lab', id: 'main-lab', titulo: 'Lab', arquivo: 'lab' },
+            { key: 'relproducao', id: 'main-relproducao', titulo: 'Rel. Produção', arquivo: 'relatorio-producao-coa' }
+        ];
+
+        // Troca de aba sem depender do "event" do clique (usado dentro do loop
+        // de exportação, chamado programaticamente).
+        function rpIrParaAba(tabKey) {
+            document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
+            const btnTab = document.querySelector(`.main-tab[onclick="switchMainTab('${tabKey}')"]`);
+            if (btnTab) btnTab.classList.add('active');
+            RP_TABS_PDF.forEach(t => { const el = document.getElementById(t.id); if (el) el.classList.remove('active'); });
+            const alvo = document.getElementById('main-' + tabKey);
+            if (alvo) alvo.classList.add('active');
+            const balHeaderTabs = document.getElementById('balance-tabs-header');
+            if (tabKey === 'relproducao') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderRelProducao(); }
+            else if (tabKey === 'balance') { if (balHeaderTabs) balHeaderTabs.style.display = 'flex'; }
+            else if (tabKey === 'densidade') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderDensidadeTimeline(); renderDensidade(); }
+            else if (tabKey === 'controle') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderControle(); }
+            else if (tabKey === 'consumo') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderConsumo(); }
+            else if (tabKey === 'liberacao') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderLiberacao(); }
+            else if (tabKey === 'lab') { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; renderLabTimeline(); renderLab(); }
+            else { if (balHeaderTabs) balHeaderTabs.style.display = 'none'; }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // CLONE do PDF de referência — só para a exportação da aba
+        // Rel. Produção. Constrói um container fora da tela com a mesma
+        // estrutura/cores do relatório modelo, usando os dados já calculados
+        // (rpCalcPorFrente, rpCalcDetalhe, rpCalcTop, potencialData etc.),
+        // e desenha os gráficos nele. rpDestruirClonePDF() limpa tudo depois.
+        // ═══════════════════════════════════════════════════════════════
+        const RP_CLONE_CHART_IDS = ['rp-pdf-canvieiro', 'rp-pdf-raiomedio', 'rp-pdf-moagem-hora', 'rp-pdf-potencial', 'rp-pdf-rpm', 'rp-pdf-disp'];
+
+        async function rpConstruirClonePDF() {
+            renderRelProducao();
+
+            let clone = document.getElementById('rp-pdf-clone');
+            if (!clone) {
+                clone = document.createElement('div');
+                clone.id = 'rp-pdf-clone';
+                document.body.appendChild(clone);
+            }
+
+            const linhas = rpCalcPorFrente();
+            const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
+            const proj = calcProjecaoMoagem();
+            const metaTotal = typeof metaMoagemDiaria === 'number' ? metaMoagemDiaria : 0;
+            const fmtTon = v => rpFmtNum(v, 2) + ' Ton';
+
+            // ── Status de caminhões ──────────────────────────────────────
+            const h = rpUltimaHoraPotencial();
+            const p = h !== null ? potencialData[h] : null;
+            const coaDados = rpCoaDia();
+            const analisadoCount = coaDados.filter(c => c.analisado).length;
+            const totalCoa = coaDados.length;
+            const pctAnalisado = totalCoa > 0 ? (analisadoCount / totalCoa) * 100 : 0;
+            const statusDefs = p ? [
+                ['📤', 'DESCARGA', p.descarga, 'descarga'],
+                ['🌾', 'CAMPO', p.campo, 'campo'],
+                ['↩️', 'VOLTA', p.volta, 'volta'],
+                ['🚚', 'IDA', p.ida, 'ida'],
+                ['⏳', 'FILA EXT.', p.filaExt, 'filaExt'],
+                ['📦', 'PÁTIO', p.carretas, 'carretas'],
+                ['🛑', 'PARADOS', p.parado, 'parados']
+            ] : [];
+            let statusHtml = statusDefs.map(([icon, label, v, key]) => {
+                const r = rpStatusRuleInfo(key, v);
+                return `<div class="clone-status-card ${r.ok ? '' : 'bad'}"><div class="lbl">${icon} ${label}</div><div class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</div></div>`;
+            }).join('');
+            const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
+            const naoAnalisadoCount = totalCoa - analisadoCount;
+            statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}">
+                <div class="lbl">🔬 Analisado</div>
+                <div class="val">${totalCoa}</div>
+                <div class="meta-info" style="font-size:10px;line-height:1.3;margin-top:4px;">
+                    <span style="color:#86efac;">✅ ${analisadoCount} SIM</span>
+                    &nbsp;|&nbsp;
+                    <span style="color:#fca5a5;">❌ ${naoAnalisadoCount} NÃO</span>
+                </div>
+            </div>`;
+            statusHtml += `<div class="clone-status-card ${rAn.ok ? '' : 'bad'}"><div class="lbl">📊 % ANALISADOS</div><div class="val">${rpFmtNum(pctAnalisado, 1)}%</div></div>`;
+            if (!p) statusHtml = '<div style="grid-column:1/-1;text-align:center;color:#888;padding:10px;">Sem dados de Potencial.xlsx</div>';
+
+            // ── Tabela grande por frente ──────────────────────────────────
+            let somaMeta = 0, somaPlanejado = 0, somaReal = 0, somaViagens = 0, somaProjecao = 0, somaSaldo = 0, raioW = 0, densW = 0, analiseW = 0, temProjecaoValida = false;
+            const seta = v => v >= 0
+                ? `<span style="color:#2e7d32;">▲ ${rpFmtNum(Math.abs(v), 2)}</span>`
+                : `<span style="color:#c62828;">▼ ${rpFmtNum(Math.abs(v), 2)}</span>`;
+            const setaOuTraco = v => v === null ? '<span style="color:#999;">—</span>' : seta(v);
+            const linhasHtml = linhas.map(l => {
+                somaMeta += l.meta24h; somaPlanejado += l.planejado; somaReal += l.realizado;
+                somaViagens += l.viagens;
+                if (l.projecaoDia !== null) { somaProjecao += l.projecaoDia; somaSaldo += l.saldo24h; temProjecaoValida = true; }
+                raioW += l.raioMedio * l.meta24h; densW += l.densidade * l.viagens; analiseW += l.analisePct * l.meta24h;
+                return `<tr>
+                    <td><strong>${l.frente}</strong></td><td>${l.fa || '—'}</td>
+                    <td>${rpFmtNum(l.raioMedio, 1)}</td><td>${rpFmtNum(l.meta24h, 0)}</td>
+                    <td>${rpFmtNum(l.metaHora, 1)}</td><td>${rpFmtNum(l.planejado, 0)}</td>
+                    <td>${rpFmtNum(l.realizado, 2)}</td><td>${seta(l.diferenca)}</td>
+                    <td>${rpFmtNum(l.densidade, 2)}</td><td>${rpFmtNum(l.analisePct, 1)}%</td>
+                    <td>${l.projecaoDia !== null ? rpFmtNum(l.projecaoDia, 2) : '—'}</td><td>${setaOuTraco(l.saldo24h)}</td>
+                </tr>`;
+            }).join('');
+            const totalRowHtml = `<tr class="total-row">
+                <td colspan="2">TOTAL</td><td>${somaMeta > 0 ? rpFmtNum(raioW / somaMeta, 1) : '—'}</td>
+                <td>${rpFmtNum(somaMeta, 0)}</td><td>${rpFmtNum(somaMeta / 24, 1)}</td>
+                <td>${rpFmtNum(somaPlanejado, 0)}</td><td>${rpFmtNum(somaReal, 2)}</td>
+                <td>${seta(somaReal - somaPlanejado)}</td>
+                <td>${somaViagens > 0 ? rpFmtNum(densW / somaViagens, 2) : '—'}</td>
+                <td>${somaMeta > 0 ? rpFmtNum(analiseW / somaMeta, 1) : '—'}%</td>
+                <td>${temProjecaoValida ? rpFmtNum(somaProjecao, 2) : '—'}</td><td>${temProjecaoValida ? seta(somaSaldo) : '<span style="color:#999;">—</span>'}</td>
+            </tr>`;
+
+            // ── Top Caminhões / Top Colhedoras ──────────────────────────
+            const topHtml = arr => arr.map(r => `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eef2ee;font-size:11px;"><span>⭐ <strong>${r.cod}</strong></span><span>${rpFmtNum(r.peso, 2)} t</span></div>`).join('') || '<div style="color:#999;text-align:center;">Sem dados</div>';
+
+            // ── Detalhe por Frente/Tipo (agrupado) ──────────────────────
+            const detalhe = rpCalcDetalhe();
+            const gruposFrente = [...new Set(detalhe.map(d => d.frente))];
+            const detalheHtml = gruposFrente.map(fr => {
+                const linhasFr = detalhe.filter(d => d.frente === fr);
+                const header = `<tr><td colspan="4" style="background:#f2f9f4;font-weight:800;color:#1f6e3d;">${fr}</td></tr>`;
+                const corpo = linhasFr.map(d => `<tr>
+                    <td style="padding-left:16px;">${d.owner} · ${d.tipo}</td>
+                    <td>${rpFmtNum(d.peso, 2)} t</td>
+                    <td>${rpFmtNum(d.viagens > 0 ? d.peso / d.viagens : 0, 2)}</td>
+                    <td>${d.viagens}</td>
+                </tr>`).join('');
+                return header + corpo;
+            }).join('');
+
+            clone.innerHTML = `
+                <div class="clone-header">
+                    <div style="display:flex;align-items:center;gap:14px;">
+                        <div class="logo-badge">🌱</div>
+                        <div class="titulo-usina">RELATÓRIO DE PRODUÇÃO</div>
+                    </div>
+                    <div style="text-align:right;color:#fff;">
+                        <div style="font-size:14px;font-weight:800;">${new Date().toLocaleString('pt-BR')}</div>
+                        <div style="font-size:11px;opacity:.85;">Última atualização</div>
+                    </div>
+                </div>
+
+                <div class="clone-kpi-row">
+                    <div class="clone-kpi-card"><div class="clone-kpi-label">REALIZADO</div><div class="clone-kpi-val">${fmtTon(totalRealizado)}</div></div>
+                    <div class="clone-kpi-card"><div class="clone-kpi-label">PROJEÇÃO DE MOAGEM</div><div class="clone-kpi-val">${fmtTon(proj.projecao)}</div></div>
+                    <div class="clone-kpi-card"><div class="clone-kpi-label">META DE MOAGEM</div><div class="clone-kpi-val">${fmtTon(metaTotal)}</div></div>
+                </div>
+
+                <div class="clone-status-row">${statusHtml}</div>
+
+                <div style="display:grid;grid-template-columns:2.3fr 1fr;gap:10px;">
+                    <div class="clone-panel">
+                        <div class="clone-panel-title">Frentes · Meta × Planejado × Realizado</div>
+                        <table class="clone-table">
+                            <thead><tr><th>Frente</th><th>F.Agr</th><th>Raio Médio</th><th>Meta 24h</th><th>Meta Hora</th><th>Planejado</th><th>Realizado</th><th>Diferença</th><th>Densidade</th><th>Análise%</th><th>Projeção dia</th><th>Saldo 24H</th></tr></thead>
+                            <tbody>${linhasHtml}${totalRowHtml}</tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <div class="clone-mini-charts-row">
+                            <div class="clone-panel"><div class="clone-panel-title">Produção Canavieiro</div><div style="height:140px;"><canvas id="rp-pdf-canvieiro-canvas"></canvas></div></div>
+                            <div class="clone-panel"><div class="clone-panel-title">Raio Médio</div><div style="height:140px;"><canvas id="rp-pdf-raiomedio-canvas"></canvas></div></div>
+                        </div>
+                        <div class="clone-mini-charts-row">
+                            <div class="clone-panel"><div class="clone-panel-title">Top Caminhões</div>${topHtml(rpCalcTop('frota'))}</div>
+                            <div class="clone-panel"><div class="clone-panel-title">Top Colhedoras</div>${topHtml(rpCalcTop('colh'))}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Coluna estreita com a tabela de detalhe + coluna larga com os
+                     3 gráficos horários empilhados — mesma composição do relatório
+                     de referência (tabela à esquerda, gráficos à direita). -->
+                <div style="display:grid;grid-template-columns:1fr 3fr;gap:10px;align-items:start;">
+                    <div class="clone-panel" style="max-height:900px;overflow:hidden;">
+                        <div class="clone-panel-title">Frente · Descrição · Líquido · Densidade · Viagens</div>
+                        <table class="clone-table">
+                            <thead><tr><th>Descrição</th><th>Líquido</th><th>Densidade</th><th>Viagens</th></tr></thead>
+                            <tbody>${detalheHtml}</tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <div class="clone-chart-card"><div class="clone-chart-title">Moagem Hora (Toneladas)</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-moagem-hora-canvas"></canvas></div></div>
+                        <div class="clone-chart-card"><div class="clone-chart-title">Potencial de Colheita</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-potencial-canvas"></canvas></div></div>
+                        <div class="clone-chart-card"><div class="clone-chart-title">Rotação da Moenda (RPM)</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-rpm-canvas"></canvas></div></div>
+                    </div>
+                </div>
+
+                <div class="clone-chart-card"><div class="clone-chart-title">Disponibilidade — Transbordo / Colhedora / Caminhão</div><div class="clone-chart-body" style="height:220px;"><canvas id="rp-pdf-disp-canvas"></canvas></div></div>
+            `;
+
+            rpRenderGraficosClone();
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            await new Promise(r => setTimeout(r, 700));
+            return clone;
+        }
+
+        function rpRenderGraficosClone() {
+            const dados = rpDadosDia();
+            const pesoProp = dados.filter(d => !d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const pesoTerc = dados.filter(d => d.camTerc).reduce((s, d) => s + d.peso, 0);
+            const totalPT = pesoProp + pesoTerc;
+            const canvCanv = document.getElementById('rp-pdf-canvieiro-canvas');
+            if (canvCanv && totalPT > 0) {
+                charts['rp-pdf-canvieiro'] = rpChartBarrasComparativo(canvCanv, {
+                    labels: ['Próprio %', 'Terceiro %'],
+                    valores: [pesoProp / totalPT * 100, pesoTerc / totalPT * 100],
+                    cores: ['#2e7d32', '#f59e0b'],
+                    formatarLabel: v => rpFmtNum(v, 2) + '%',
+                    formatarTooltip: v => rpFmtNum(v, 2) + '%'
+                });
+            }
+            const dadosBalanco = selectedDay === 'TODOS' ? balanceData : balanceData.filter(d => d.dia === selectedDay);
+            const raioPropMedio = avg(dadosBalanco.filter(d => d.camProp && d.raio > 0).map(d => d.raio));
+            const raioTercMedio = avg(dadosBalanco.filter(d => d.camTerc && d.raio > 0).map(d => d.raio));
+            const canvRaio = document.getElementById('rp-pdf-raiomedio-canvas');
+            if (canvRaio && (raioPropMedio > 0 || raioTercMedio > 0)) {
+                charts['rp-pdf-raiomedio'] = rpChartBarrasComparativo(canvRaio, {
+                    labels: ['Terceiro', 'Próprio'],
+                    valores: [raioTercMedio, raioPropMedio],
+                    cores: ['#f59e0b', '#2e7d32'],
+                    formatarLabel: v => rpFmtNum(v, 2) + ' km',
+                    formatarTooltip: v => rpFmtNum(v, 2) + ' km'
+                });
+            }
+
+            const HORAS = HORAS_CICLO;
+            const LABELS = HORAS.map(hh => String(hh).padStart(2, '0') + ':00');
+            const rpCloneLabels = {
+                display: (ctx) => { const v = ctx.dataset.data[ctx.dataIndex]; return v !== null && v !== undefined && v !== 0; },
+                anchor: 'end', align: 'top', offset: 2, color: '#111', font: { weight: '800', size: 10 },
+                formatter: (v) => rpFmtNum(v, 0)
+            };
+            const rpCloneCorBarras = (arr, metaVal, corOk) => arr.map(v => {
+                if (v === null || v === undefined) return 'transparent';
+                if (metaVal === null || metaVal === undefined || isNaN(metaVal) || metaVal <= 0) return corOk;
+                return v < metaVal ? '#c62828' : corOk;
+            });
+            const rpCloneMetaLine = (getMeta) => ({
+                id: 'rpCloneMetaLine',
+                afterDatasetsDraw(chart) {
+                    const meta = getMeta();
+                    if (meta === null || meta === undefined || isNaN(meta) || meta <= 0) return;
+                    const { ctx, scales: { x, y } } = chart;
+                    if (!x || !y) return;
+                    const yPos = y.getPixelForValue(meta);
+                    if (yPos < y.top || yPos > y.bottom) return;
+                    ctx.save();
+                    ctx.strokeStyle = '#1b4f72'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+                    ctx.beginPath(); ctx.moveTo(x.left, yPos); ctx.lineTo(x.right, yPos); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = '#1b4f72'; ctx.font = 'bold 10px Arial'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+                    ctx.fillText('META ' + rpFmtNum(meta, 1), x.right - 2, yPos - 3);
+                    ctx.restore();
+                }
+            });
+
+            const metaMoagemHora = (typeof metaMoagemDiaria === 'number' && metaMoagemDiaria > 0) ? metaMoagemDiaria / 24 : null;
+            const canvMoagem = document.getElementById('rp-pdf-moagem-hora-canvas');
+            if (canvMoagem) {
+                const totalPorHora = getTotalPorHoraArray().map(v => v > 0 ? parseFloat(v.toFixed(2)) : 0);
+                charts['rp-pdf-moagem-hora'] = new Chart(canvMoagem.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ data: totalPorHora, backgroundColor: rpCloneCorBarras(totalPorHora, metaMoagemHora, '#2e7d32'), borderRadius: 2, datalabels: rpCloneLabels }] },
+                    plugins: [rpCloneMetaLine(() => metaMoagemHora)],
+                    options: { responsive: true, maintainAspectRatio: false, layout: { padding: { top: 22, right: 50 } }, scales: { x: { ticks: { color: '#333', font: { size: 9 } } }, y: { ticks: { color: '#333' } } }, plugins: { legend: { display: false } } }
+                });
+            }
+            const potArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].potencial : null);
+            const canvPot = document.getElementById('rp-pdf-potencial-canvas');
+            if (canvPot) {
+                charts['rp-pdf-potencial'] = new Chart(canvPot.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ data: potArr, backgroundColor: rpCloneCorBarras(potArr, rpMetas.potencial, '#2e7d32'), borderRadius: 2, datalabels: rpCloneLabels }] },
+                    plugins: [rpCloneMetaLine(() => rpMetas.potencial)],
+                    options: { responsive: true, maintainAspectRatio: false, spanGaps: false, layout: { padding: { top: 22, right: 50 } }, scales: { x: { ticks: { color: '#333', font: { size: 9 } } }, y: { ticks: { color: '#333' } } }, plugins: { legend: { display: false } } }
+                });
+            }
+            const rpmArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].rpm : null);
+            const canvRpm = document.getElementById('rp-pdf-rpm-canvas');
+            if (canvRpm) {
+                charts['rp-pdf-rpm'] = new Chart(canvRpm.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: LABELS, datasets: [{ data: rpmArr, backgroundColor: rpCloneCorBarras(rpmArr, rpMetas.rpm, '#2e7d32'), borderRadius: 2, datalabels: rpCloneLabels }] },
+                    plugins: [rpCloneMetaLine(() => rpMetas.rpm)],
+                    options: { responsive: true, maintainAspectRatio: false, layout: { padding: { top: 22, right: 50 } }, scales: { x: { ticks: { color: '#333', font: { size: 9 } } }, y: { ticks: { color: '#333' } } }, plugins: { legend: { display: false } } }
+                });
+            }
+            const dispColhArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispColh * 100 : null);
+            const dispTransbArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispTransb * 100 : null);
+            const dispCamArr = HORAS.map(hh => potencialData[hh] ? potencialData[hh].dispCam * 100 : null);
+            const canvDisp = document.getElementById('rp-pdf-disp-canvas');
+            if (canvDisp) {
+                charts['rp-pdf-disp'] = new Chart(canvDisp.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: LABELS,
+                        datasets: [
+                            { label: 'Disp. Colhedora', data: dispColhArr, borderColor: '#2e7d32', backgroundColor: '#2e7d32', tension: .3 },
+                            { label: 'Disp. Transbordo', data: dispTransbArr, borderColor: '#f59e0b', backgroundColor: '#f59e0b', tension: .3 },
+                            { label: 'Disp. Caminhão', data: dispCamArr, borderColor: '#1b4f72', backgroundColor: '#1b4f72', tension: .3 }
+                        ]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false, spanGaps: false, scales: { y: { ticks: { callback: v => v + '%', color: '#333' } }, x: { ticks: { color: '#333', font: { size: 9 } } } }, plugins: { legend: { labels: { color: '#333' } }, datalabels: { display: false } } }
+                });
+            }
+        }
+
+        function rpDestruirClonePDF() {
+            RP_CLONE_CHART_IDS.forEach(id => { if (charts[id]) { try { charts[id].destroy(); } catch (e) { /* ignora */ } delete charts[id]; } });
+            const clone = document.getElementById('rp-pdf-clone');
+            if (clone) clone.remove();
+        }
+
+        // Fatia um canvas capturado em páginas de PDF: se couber numa página só,
+        // cria UMA página do tamanho exato do conteúdo (sem sobra em branco).
+        // Se for comprido, divide em QUANTAS páginas A4 forem necessárias —
+        // nunca corta conteúdo, não importa quantas páginas isso exija.
+        function rpMontarPaginasPDF(pdf, canvas, pageWmm, pageHmmA4) {
+            const totalHmm = (canvas.height * pageWmm) / canvas.width;
+
+            if (totalHmm <= pageHmmA4 * 1.1) {
+                pdf.addPage([pageWmm, totalHmm], 'p');
+                pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pageWmm, totalHmm);
+                return;
+            }
+
+            // Altura de cada fatia em px, correspondente a uma página A4 cheia.
+            const pageHmmSlice = pageHmmA4;
+            const sliceAlturaPx = Math.floor((pageHmmSlice * canvas.width) / pageWmm);
+            const numPaginas = Math.ceil(canvas.height / sliceAlturaPx);
+
+            for (let i = 0; i < numPaginas; i++) {
+                const inicio = i * sliceAlturaPx;
+                const altura = Math.min(sliceAlturaPx, canvas.height - inicio);
+                if (altura <= 0) continue;
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width = canvas.width;
+                pageCanvas.height = altura;
+                const ctx = pageCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+                ctx.drawImage(canvas, 0, inicio, canvas.width, altura, 0, 0, canvas.width, altura);
+                const sliceHmm = (altura * pageWmm) / canvas.width;
+                pdf.addPage([pageWmm, sliceHmm], 'p');
+                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pageWmm, sliceHmm);
+            }
+        }
+
+        async function exportarRelatorioPDF() {
+            const btn = document.getElementById('btn-export-pdf');
+            const wrapper = document.getElementById('dashboardContent');
+            if (!wrapper || wrapper.classList.contains('hidden')) {
+                showToast('⚠️ Carregue os dados antes de exportar', '#dc2626');
+                return;
+            }
+            if (!window.jspdf || !window.jspdf.jsPDF) {
+                showToast('❌ Biblioteca de PDF não carregou (verifique a conexão).', '#dc2626');
+                return;
+            }
+
+            const textoOriginal = btn.innerHTML;
+            btn.disabled = true;
+
+            // Guarda a aba ativa atual para restaurar ao final.
+            const abaOriginal = document.querySelector('.main-tab-content.active');
+            const abaOriginalKey = abaOriginal ? abaOriginal.id.replace('main-', '') : 'solinftec';
+            const { jsPDF } = window.jspdf;
+            const carimboArquivo = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+            let algumaFalhou = false;
+
+            // Gera o PDF SOMENTE da aba que está ativa/aberta no momento do
+            // clique — não percorre mais todas as abas de RP_TABS_PDF. Para
+            // gerar o PDF de outra aba, o usuário troca de aba na tela e
+            // clica em exportar novamente.
+            const tabsParaExportar = RP_TABS_PDF.filter(t => t.key === abaOriginalKey);
+            if (tabsParaExportar.length === 0) {
+                showToast('⚠️ Não é possível exportar PDF desta aba.', '#dc2626');
+                btn.disabled = false;
+                btn.innerHTML = textoOriginal;
+                return;
+            }
+
+            try {
+                for (const tab of tabsParaExportar) {
+                    btn.innerHTML = '⏳ Gerando PDF… (' + tab.titulo + ')';
+                    let target;
+                    let tabelasDetalhamento = [];
+
+                    if (tab.key === 'relproducao') {
+                        // Aba Rel. Produção: usa o clone dedicado (layout do
+                        // relatório de referência), não a aba ao vivo.
+                        target = await rpConstruirClonePDF();
+                    } else {
+                        rpIrParaAba(tab.key);
+                        // Espera dupla animação de frame + tempo extra para os
+                        // gráficos (Chart.js) terminarem a animação de entrada
+                        // antes de tirar a "foto" — evita barras/linhas cortadas.
+                        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                        Object.values(charts).forEach(c => { try { c && c.resize(); } catch (e) { /* ignora */ } });
+                        await new Promise(r => setTimeout(r, 850));
+                        target = document.getElementById(tab.id);
+                        if (target) {
+                            tabelasDetalhamento = target.querySelectorAll('#consumo-caminhao-tabela, #consumo-colhedoras-tabela');
+                            tabelasDetalhamento.forEach(el => el.style.display = 'none');
+                        }
+                    }
+                    if (!target) continue;
+
+                    try {
+                        const rect = target.getBoundingClientRect();
+                        // Largura NATURAL real do conteúdo — nunca reduzida artificialmente.
+                        // Antes havia um teto de 1920px aqui (Math.min(rect.width, 1920)) que,
+                        // em telas/monitores largos, forçava o html2canvas a renderizar o
+                        // clone num "viewport" mais estreito do que o layout real. Como
+                        // grids (.main-grid), tabelas e principalmente os <canvas> do
+                        // Chart.js (que têm largura em pixels fixada na criação do gráfico,
+                        // não relativa) NÃO se reencaixam nesse viewport reduzido, o
+                        // conteúdo que não coube ultrapassava os limites da captura e era
+                        // cortado — sem erro, sem aviso (ex.: card "Acumulado" e a legenda
+                        // "Frente 16..." somem à direita). A captura agora sempre usa a
+                        // MESMA largura que já está sendo exibida na tela, então nada
+                        // reflui de forma diferente e nada fica de fora do "print".
+                        const targetW = Math.max(rect.width || 0, target.scrollWidth || 0);
+                        const targetH = Math.max(rect.height || 0, target.scrollHeight || 0);
+                        if (targetH > 0 && targetW > 0) {
+                            // Escala dinâmica: em conteúdos muito altos (ex.: Densidade de
+                            // Carga ou Análise Balança com a safra completa) ou muito largos
+                            // (monitores ultrawide), scale:3 fixo pode gerar um canvas maior
+                            // que o limite suportado pelo navegador, fazendo o html2canvas
+                            // truncar a imagem em silêncio (sem erro, sem aviso — o conteúdo
+                            // simplesmente some a partir de certo ponto). Por isso limitamos
+                            // a altura E a largura finais do canvas a um teto seguro,
+                            // reduzindo a ESCALA (nunca a largura de captura) quando
+                            // necessário — isso preserva o layout e só reduz a resolução.
+                            const RP_CANVAS_MAX_H_PX = 14000; // teto seguro de altura (px) pós-escala
+                            const RP_CANVAS_MAX_W_PX = 14000; // teto seguro de largura (px) pós-escala
+                            const scale = Math.min(3, RP_CANVAS_MAX_H_PX / targetH, RP_CANVAS_MAX_W_PX / targetW);
+                            const canvas = await html2canvas(target, {
+                                backgroundColor: '#ffffff',
+                                scale: scale,
+                                useCORS: true,
+                                allowTaint: true,
+                                logging: false,
+                                width: targetW,
+                                height: targetH,
+                                windowWidth: targetW,
+                                windowHeight: targetH,
+                                scrollX: 0,
+                                scrollY: tab.key === 'relproducao' ? 0 : -window.scrollY
+                            });
+
+                            const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+                            rpMontarPaginasPDF(pdf, canvas, pdf.internal.pageSize.getWidth() || 210, 297);
+                            // Remove a página em branco padrão criada pelo construtor do
+                            // jsPDF (só pode ser removida depois que há outra página).
+                            if (pdf.internal.getNumberOfPages() > 1) pdf.deletePage(1);
+                            pdf.save('relatorio-' + tab.arquivo + '-' + carimboArquivo + '.pdf');
+                        }
+                    } catch (errAba) {
+                        algumaFalhou = true;
+                        console.warn('Falha ao capturar aba', tab.key, errAba);
+                    } finally {
+                        tabelasDetalhamento.forEach(el => el.style.display = '');
+                        if (tab.key === 'relproducao') rpDestruirClonePDF();
+                    }
+
+                    // Pequena pausa entre downloads para o navegador não bloquear
+                    // múltiplos arquivos disparados em sequência.
+                    await new Promise(r => setTimeout(r, 400));
+                }
+
+                showToast(algumaFalhou ? '⚠️ Falha ao gerar o PDF desta aba.' : '📄 PDF da aba atual exportado!', algumaFalhou ? '#f59e0b' : '#16a34a');
+            } catch (err) {
+                console.warn('Exportação PDF:', err);
+                showToast('❌ Não foi possível gerar o PDF.', '#dc2626');
+            } finally {
+                rpIrParaAba(abaOriginalKey);
+                btn.disabled = false;
+                btn.innerHTML = textoOriginal;
+            }
+        }
+        // ═══════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+        //  MÓDULO CONSUMO  (novo — isolado, prefixo "consumo")
+        //  Subabas: Caminhão (grupos por equipe) e Colhedoras (grupos por frente)
+        //  Fontes: ConsumoCanavieiros.xls / ConsumoColhedoras.xls (relatório GAtec
+        //  "Índices Operacionais") + CAMINHÃO.xlsx / Colhedoras.xlsx (classificação)
+        // ═══════════════════════════════════════════════════════════════════
+
+        let consumoCaminhaoData = [];   // [{frota, grupo, metrics:{label:num}}]
+        let consumoColhedorasData = [];
+        let consumoTplData = [];
+        let consumoClassificacaoCaminhao = {}; // frota -> grupo
+        let consumoClassificacaoColhedoras = {}; // frota -> "Frente X"
+        let consumoClassificacaoTpl = {}; // frota -> gestor/grupo TPL
+        let consumoCharts = {};   // instâncias Chart.js do módulo
+        let consumoMetasCaminhao = {};   // grupo -> meta
+        let consumoMetasColhedoras = {};
+        let consumoMetasTpl = {};
+        let consumoColunasCaminhao = [];   // métricas numéricas disponíveis
+        let consumoColunasColhedoras = [];
+        let consumoColunasTpl = [];
+        let consumoMetricaCaminhao = null; // métrica selecionada
+        let consumoMetricaColhedoras = null;
+        let consumoMetricaTpl = null;
+        let consumoArquivos = { consCam: null, consCol: null, classCam: null, classCol: null, consTplGlobal: null, classTpl: null };
+        let consumoPeriodoCaminhao = '';      // Período extraído do cabeçalho do ConsumoCanavieiros
+        let consumoPeriodoColhedoras = '';    // Período extraído do cabeçalho do ConsumoColhedoras
+        let consumoPeriodoTpl = '';           // Período extraído do Consumo Global
+        let consumoDataRelatorioCaminhao = '';
+        let consumoDataRelatorioColhedoras = '';
+        let consumoDataRelatorioTpl = '';
+        let consumoAbaAtiva = 'caminhao';
+        let consumoProcessado = false;
+        let consumoFiltroGrupoCaminhao = 'TODOS'; // chip de grupo ativo na subaba Caminhão
+        let consumoFiltroGrupoTpl = 'TODOS'; // chip de grupo ativo na subaba Consumo TPL
+
+        const CONSUMO_SEM_CLASSIF = 'SEM CLASSIFICAÇÃO';
+        const CONSUMO_COR_VERDE = '#16a34a';
+        const CONSUMO_COR_VERMELHO = '#dc2626';
+        const CONSUMO_COR_NEUTRA = '#94a3b8';
+
+        // ── Utilidades ──────────────────────────────────────────────────────
+        function consumoNormalizarTexto(s) {
+            return String(s == null ? '' : s)
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase().replace(/[\s_\-]+/g, '').trim();
+        }
+
+        function normalizarFrotaConsumo(v) {
+            if (v == null || v === '') return null;
+            const dig = String(v).trim().replace(/\.0+$/, '').replace(/\D/g, '');
+            return dig.length ? dig : null;
+        }
+
+        function consumoFmt(n, dec = 2) {
+            if (n == null || isNaN(n)) return '—';
+            return Number(n).toLocaleString('pt-BR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+        }
+
+        function consumoSlug(s) {
+            return consumoNormalizarTexto(s).replace(/[^a-z0-9]/g, '') || 'x';
+        }
+
+        function consumoEscHtml(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function consumoFormatarDataCabecalho(dataTxt) {
+            const m = String(dataTxt || '').trim().match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+            if (!m) return '';
+            let d = m[1].padStart(2, '0');
+            let mo = m[2].padStart(2, '0');
+            let y = m[3];
+            if (y.length === 2) y = (parseInt(y, 10) >= 70 ? '19' : '20') + y;
+            return d + '/' + mo + '/' + y;
+        }
+
+        function consumoExtrairPeriodoRelatorio(json) {
+            const vazio = { periodo: '', data: '', hora: '' };
+            if (!Array.isArray(json) || !json.length) return vazio;
+
+            const linhas = json.slice(0, 60).map(row =>
+                (row || []).map(c => String(c == null ? '' : c).trim()).filter(Boolean).join(' ')
+            ).filter(Boolean);
+            const texto = linhas.join('\n').replace(/\s+/g, ' ').trim();
+            if (!texto) return vazio;
+
+            const periodoMatch = texto.match(/per[ií]odo\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*(?:a|ate|até|\-)\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+            const dataMatch = texto.match(/\bdata\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+            const horaMatch = texto.match(/\bhora\s*:?\s*(\d{1,2}:\d{2}(?::\d{2})?)/i);
+
+            const ini = periodoMatch ? consumoFormatarDataCabecalho(periodoMatch[1]) : '';
+            const fim = periodoMatch ? consumoFormatarDataCabecalho(periodoMatch[2]) : '';
+            return {
+                periodo: (ini && fim) ? (ini + ' a ' + fim) : '',
+                data: dataMatch ? consumoFormatarDataCabecalho(dataMatch[1]) : '',
+                hora: horaMatch ? horaMatch[1] : ''
+            };
+        }
+
+        function consumoAtualizarPeriodoSafra() {
+            const btn = document.getElementById('consumo-btn-safra');
+            const badge = document.getElementById('consumo-periodo-badge');
+            const info = document.getElementById('consumo-safra-info');
+            if (!btn) return;
+
+            const periodoAtual = consumoAbaAtiva === 'tpl'
+                ? (consumoPeriodoTpl || consumoPeriodoCaminhao || consumoPeriodoColhedoras || solinftecPeriodo || '')
+                : (consumoAbaAtiva === 'colhedoras'
+                    ? (consumoPeriodoColhedoras || consumoPeriodoCaminhao || consumoPeriodoTpl || solinftecPeriodo || '')
+                    : (consumoPeriodoCaminhao || consumoPeriodoColhedoras || consumoPeriodoTpl || solinftecPeriodo || ''));
+            const dataRel = consumoAbaAtiva === 'tpl'
+                ? (consumoDataRelatorioTpl || consumoDataRelatorioCaminhao || consumoDataRelatorioColhedoras || '')
+                : (consumoAbaAtiva === 'colhedoras'
+                    ? (consumoDataRelatorioColhedoras || consumoDataRelatorioCaminhao || consumoDataRelatorioTpl || '')
+                    : (consumoDataRelatorioCaminhao || consumoDataRelatorioColhedoras || consumoDataRelatorioTpl || ''));
+
+            btn.innerHTML = '📅 SAFRA COMPLETA';
+            if (badge) {
+                badge.style.display = periodoAtual ? 'inline-flex' : 'none';
+                badge.innerHTML = periodoAtual ? ('Período: <strong>' + consumoEscHtml(periodoAtual) + '</strong>') : '';
+            }
+            if (info) {
+                if (periodoAtual) {
+                    info.innerHTML = '📅 Período do relatório: <strong>' + consumoEscHtml(periodoAtual) + '</strong>' +
+                        (dataRel ? ' &nbsp;|&nbsp; Emitido em: <strong>' + consumoEscHtml(dataRel) + '</strong>' : '') +
+                        ' — Dados consolidados da safra completa.';
+                } else {
+                    info.innerHTML = '📅 Safra completa — período do relatório não encontrado no cabeçalho dos arquivos de consumo.';
+                }
+            }
+        }
+
+        function consumoResetArquivos() {
+            consumoArquivos = { consCam: null, consCol: null, classCam: null, classCol: null, consTplGlobal: null, classTpl: null };
+            consumoPeriodoCaminhao = '';
+            consumoPeriodoColhedoras = '';
+            consumoPeriodoTpl = '';
+            consumoDataRelatorioCaminhao = '';
+            consumoDataRelatorioColhedoras = '';
+            consumoDataRelatorioTpl = '';
+            consumoAtualizarPeriodoSafra();
+        }
+
+        // ── Identificação automática dos arquivos na pasta ─────────────────
+        function consumoIdentificarArquivo(nome) {
+            const m = String(nome).match(/^(.*)\.(xlsx?|xlsm)$/i);
+            if (!m) return null;
+            const n = consumoNormalizarTexto(m[1]);
+
+            if (n.startsWith('consumo')) {
+                if (n.includes('global')) return 'consTplGlobal';
+                if (n.includes('colhedora')) return 'consCol';
+                if (n.includes('canavieiro') || n.includes('caminh') || n.includes('caminhao')) return 'consCam';
+                return null;
+            }
+            if (n === 'caminhao' || n === 'caminhoes' || n.startsWith('tipocaminhao') || n.startsWith('classificacaocaminhao')) return 'classCam';
+            if (n === 'colhedora' || n === 'colhedoras' || n.startsWith('tipocolhedora') || n.startsWith('classificacaocolhedora')) return 'classCol';
+            if (n === 'frotastpl' || n === 'frottpl' || n === 'tpl' || n.startsWith('frotastpl') || n.startsWith('classificacaotpl')) return 'classTpl';
+            return null;
+        }
+
+        // ── Leitura dos arquivos de classificação ───────────────────────────
+        function consumoParseClassificacao(json, tipo) {
+            const mapa = {};
+            if (!json || !json.length) return mapa;
+
+            const nomesFrota = ['frota', 'equipamento', 'caminhao', 'colhedora', 'equip', 'codigo', 'cod', 'codeqp'];
+            const nomesGrupo = ['grupo', 'equipe', 'tipo', 'frente', 'grupofrente', 'tipocaminhao', 'classificacao'];
+
+            let headerIdx = -1, frotaCol = -1, grupoCol = -1;
+            for (let i = 0; i < Math.min(json.length, 25); i++) {
+                const row = json[i] || [];
+                let fc = -1, gc = -1;
+                for (let c = 0; c < row.length; c++) {
+                    const t = consumoNormalizarTexto(row[c]);
+                    if (!t) continue;
+                    if (fc < 0 && nomesFrota.some(x => t === x || t.startsWith(x))) fc = c;
+                    else if (gc < 0 && nomesGrupo.some(x => t === x || t.startsWith(x))) gc = c;
+                }
+                if (fc >= 0 && gc >= 0) { headerIdx = i; frotaCol = fc; grupoCol = gc; break; }
+            }
+            // fallback: assume duas primeiras colunas
+            if (headerIdx < 0) { headerIdx = 0; frotaCol = 0; grupoCol = 1; }
+
+            for (let i = headerIdx + 1; i < json.length; i++) {
+                const row = json[i] || [];
+                const frota = normalizarFrotaConsumo(row[frotaCol]);
+                if (!frota) continue;
+                let grupo = String(row[grupoCol] == null ? '' : row[grupoCol]).trim();
+                if (!grupo) grupo = CONSUMO_SEM_CLASSIF;
+                if (tipo === 'colhedoras' && /^\d+([.,]\d+)?$/.test(grupo)) grupo = 'Frente ' + parseInt(grupo, 10);
+                mapa[frota] = grupo;
+            }
+            return mapa;
+        }
+
+        // ── Parser do relatório GAtec "Índices Operacionais" ────────────────
+        // Estrutura: linha-cabeçalho com "Equip." define a coluna da frota; a linha
+        // seguinte traz os rótulos das métricas (Ton. Cana, Km/Horas, Combustível,
+        // Km/Litros, Litros/ton, Litros/Hr...). Por causa de células mescladas, os
+        // rótulos e os dados podem estar deslocados em ±1 coluna — o mapeamento é
+        // feito pela ORDEM das colunas preenchidas nas linhas de dados.
+        function consumoParseIndices(json) {
+            if (!json || !json.length) return null;
+
+            let frotaCol = -1, headerIdx = -1;
+            for (let i = 0; i < json.length && frotaCol < 0; i++) {
+                const row = json[i] || [];
+                for (let c = 0; c < row.length; c++) {
+                    const tCab = consumoNormalizarTexto(row[c]).replace(/\./g, '');
+                    if (tCab === 'equip' || tCab === 'equipamento') { frotaCol = c; headerIdx = i; break; }
+                }
+            }
+            if (frotaCol < 0) return null;
+
+            // Rótulos das métricas (linha seguinte ao cabeçalho "Equip.")
+            let labels = [];
+            for (let i = headerIdx + 1; i <= headerIdx + 2 && i < json.length; i++) {
+                const row = json[i] || [];
+                const tmp = [];
+                for (let c = frotaCol + 1; c < row.length; c++) {
+                    const v = row[c];
+                    if (v != null && String(v).trim() !== '') tmp.push({ col: c, label: String(v).trim() });
+                }
+                if (tmp.length >= 4) { labels = tmp; break; }
+            }
+            if (!labels.length) return null;
+
+            // Linhas de dados: coluna 0 vazia (exclui "Média Modelo"/"Média Geral")
+            // e valor numérico de frota na coluna "Equip."
+            const dataRows = [];
+            for (const row of json) {
+                if (!row) continue;
+                const c0 = String(row[0] == null ? '' : row[0]).trim();
+                if (c0 !== '') continue;
+                const bruto = row[frotaCol];
+                if (bruto == null || bruto === '') continue;
+                const frota = normalizarFrotaConsumo(bruto);
+                if (!frota || !/^\d{2,7}$/.test(frota)) continue;
+                if (typeof bruto !== 'number' && !/^\d+$/.test(String(bruto).trim())) continue;
+                dataRows.push(row);
+            }
+            if (!dataRows.length) return null;
+
+            // União das colunas preenchidas nas linhas de dados (após a frota)
+            const colSet = new Set();
+            dataRows.forEach(r => {
+                for (let c = frotaCol + 1; c < r.length; c++) {
+                    const v = r[c];
+                    if (v != null && String(v).trim() !== '') colSet.add(c);
+                }
+            });
+            const dataCols = Array.from(colSet).sort((a, b) => a - b);
+
+            // Mapeia rótulo → coluna de dado
+            let mapping = [];
+            if (labels.length === dataCols.length) {
+                mapping = dataCols.map((c, i) => ({ col: c, label: labels[i].label }));
+            } else {
+                // associa cada rótulo à coluna de dado mais próxima ainda livre
+                const usadas = new Set();
+                labels.forEach(l => {
+                    let melhor = null, melhorDist = Infinity;
+                    dataCols.forEach(c => {
+                        if (usadas.has(c)) return;
+                        const d = Math.abs(c - l.col);
+                        if (d < melhorDist) { melhorDist = d; melhor = c; }
+                    });
+                    if (melhor != null && melhorDist <= 2) { usadas.add(melhor); mapping.push({ col: melhor, label: l.label }); }
+                });
+                mapping.sort((a, b) => a.col - b.col);
+            }
+
+            // Diferencia rótulos repetidos (ex.: "Lt/ton" de Óleo Hid. e Óleo Lub.)
+            const vistos = {};
+            mapping.forEach(mp => {
+                if (vistos[mp.label]) { vistos[mp.label]++; mp.label = mp.label + ' (' + vistos[mp.label] + ')'; }
+                else vistos[mp.label] = 1;
+            });
+
+            // Registros únicos por frota (primeira ocorrência)
+            const regs = {};
+            dataRows.forEach(r => {
+                const frota = normalizarFrotaConsumo(r[frotaCol]);
+                if (regs[frota]) return;
+                const metrics = {};
+                mapping.forEach(mp => {
+                    const v = r[mp.col];
+                    const num = (typeof v === 'number') ? v : parseFloat(String(v).replace(/\./g, '').replace(',', '.'));
+                    metrics[mp.label] = isNaN(num) ? null : num;
+                });
+                regs[frota] = { frota: frota, metrics: metrics };
+            });
+
+            return { registros: Object.values(regs), colunas: mapping.map(mp => mp.label) };
+        }
+
+
+        // ── Parser do relatório GAtec "Consumo Médio Geral" (Consumo Global.xls) ──
+        function consumoParseGlobalTpl(json) {
+            const saida = { registros: [], colunas: ['Consumo', 'Litros', 'Hora/KM', 'Litro previsto', 'Hora/KM previsto'], avisos: [] };
+            if (!Array.isArray(json) || !json.length) return saida;
+
+            let secao = '';
+            let header = null;
+            const parseNum = function (v) {
+                if (v == null || v === '') return null;
+                if (typeof v === 'number') return isNaN(v) ? null : v;
+                const t = String(v).trim();
+                if (!t) return null;
+                const n = parseFloat(t.replace(/\./g, '').replace(',', '.').replace(/[^0-9.\-]/g, ''));
+                return isNaN(n) ? null : n;
+            };
+            const textoLinha = function (row) {
+                return (row || []).map(c => String(c == null ? '' : c).trim()).filter(Boolean).join(' ');
+            };
+            const achaColuna = function (row, pred) {
+                for (let c = 0; c < row.length; c++) {
+                    const raw = String(row[c] == null ? '' : row[c]).trim();
+                    const n = consumoNormalizarTexto(raw).replace(/\./g, '');
+                    if (pred(n, raw, c)) return c;
+                }
+                return -1;
+            };
+            const montarHeader = function (row) {
+                const frotaCol = achaColuna(row, n => n === 'codeqp' || n === 'codigoeqp' || n === 'codigoequipamento');
+                const equipCol = achaColuna(row, n => n === 'equipamento' || n === 'equip');
+                let consumoCol = -1;
+                for (let c = row.length - 1; c >= 0; c--) {
+                    const n = consumoNormalizarTexto(row[c]).replace(/\./g, '');
+                    if (n === 'consumo') { consumoCol = c; break; }
+                }
+                const litroCols = [];
+                const horaCols = [];
+                for (let c = 0; c < row.length; c++) {
+                    const n = consumoNormalizarTexto(row[c]).replace(/\./g, '');
+                    if (n === 'litrop' || n === 'litroprevisto' || n === 'litrosp') litroCols.push({ c: c, tipo: 'prev' });
+                    else if (n === 'litro' || n === 'litros') litroCols.push({ c: c, tipo: 'real' });
+                    if (n === 'horakmp' || n === 'hora/kmp' || n === 'horakmprevisto' || n === 'hora/kmprevisto') horaCols.push({ c: c, tipo: 'prev' });
+                    else if (n === 'horakm' || n === 'hora/km' || n === 'hora' || n === 'km') horaCols.push({ c: c, tipo: 'real' });
+                }
+                const litroPrevCol = (litroCols.find(x => x.tipo === 'prev') || {}).c ?? -1;
+                const litroCol = (litroCols.find(x => x.tipo === 'real') || {}).c ?? -1;
+                const horaPrevCol = (horaCols.find(x => x.tipo === 'prev') || {}).c ?? -1;
+                const horaKmCol = (horaCols.find(x => x.tipo === 'real') || {}).c ?? -1;
+                if (frotaCol >= 0 && equipCol >= 0 && consumoCol >= 0) {
+                    return { frotaCol, equipCol, litroPrevCol, horaPrevCol, litroCol, horaKmCol, consumoCol };
+                }
+                return null;
+            };
+
+            const porFrota = {};
+            for (let i = 0; i < json.length; i++) {
+                const row = json[i] || [];
+                const linhaNorm = consumoNormalizarTexto(textoLinha(row));
+                if (!linhaNorm) continue;
+                if (linhaNorm.includes('equipamentoscomhorimetro')) { secao = 'HORIMETRO'; continue; }
+                if (linhaNorm.includes('equipamentoscomhodometro')) { secao = 'HODOMETRO'; continue; }
+
+                const h = montarHeader(row);
+                if (h) { header = h; continue; }
+                if (!header) continue;
+
+                const frota = normalizarFrotaConsumo(row[header.frotaCol]);
+                if (!frota || !/^\d{1,8}$/.test(frota)) continue;
+                const consumo = parseNum(row[header.consumoCol]);
+                const litros = header.litroCol >= 0 ? parseNum(row[header.litroCol]) : null;
+                const horaKm = header.horaKmCol >= 0 ? parseNum(row[header.horaKmCol]) : null;
+                const litroPrev = header.litroPrevCol >= 0 ? parseNum(row[header.litroPrevCol]) : null;
+                const horaPrev = header.horaPrevCol >= 0 ? parseNum(row[header.horaPrevCol]) : null;
+                if (consumo == null && litros == null && horaKm == null) continue;
+
+                const desc = String(row[header.equipCol] == null ? '' : row[header.equipCol]).trim();
+                const medicao = secao === 'HODOMETRO' ? 'Hodômetro' : (secao === 'HORIMETRO' ? 'Horímetro' : 'Indefinido');
+                porFrota[frota] = {
+                    frota: frota,
+                    descricao: desc,
+                    medicao: medicao,
+                    litro: litros,
+                    horaKm: horaKm,
+                    metrics: {
+                        'Consumo': consumo,
+                        'Litros': litros,
+                        'Hora/KM': horaKm,
+                        'Litro previsto': litroPrev,
+                        'Hora/KM previsto': horaPrev
+                    }
+                };
+            }
+            saida.registros = Object.values(porFrota);
+            return saida;
+        }
+
+        // ── Métricas: seleção padrão e direção de comparação ────────────────
+        function consumoFiltrarColunasRelevantes(colunas) {
+            const rel = colunas.filter(c =>
+                /km\s*\/\s*litros|litros\s*\/\s*ton|litros\s*\/\s*hr|ton\s*\/\s*hr|ton\s*\/\s*viag|km\/l|l\/h\b|l\/km|l\/ha|ha\/h|consumo|m[ée]dia|valor|combust/i.test(c));
+            return rel.length ? rel : colunas.slice();
+        }
+
+        function detectarColunaConsumo(colunas, tipo) {
+            const prioridade = (tipo === 'caminhao')
+                ? ['km/litros', 'litros/ton', 'km/l', 'l/km', 'consumo', 'media', 'valor', 'combustivel']
+                : (tipo === 'tpl'
+                    ? ['consumo', 'litros/hr', 'litroshr', 'l/h', 'km/l', 'litros', 'hora/km']
+                    : ['litros/hr', 'litroshr', 'l/h', 'litros/ton', 'l/ton', 'ton/hr', 'consumo', 'media', 'valor', 'combustivel']);
+            for (const p of prioridade) {
+                const achada = colunas.find(c => consumoNormalizarTexto(c).includes(consumoNormalizarTexto(p)));
+                if (achada) return achada;
+            }
+            return colunas[0] || null;
+        }
+
+        // "Menor é melhor" para Litros/ton, Litros/Hr etc.; "Maior é melhor" para
+        // Km/Litros, Ton/Hr, Ton/Viag, R. Energético e Disp %.
+        function consumoMenorMelhor(metrica) {
+            if (!metrica) return true;
+            return !(/km\s*\/\s*l|ton\s*\/\s*(hr|h\b|viag)|r\.?\s*energ|disp/i.test(metrica));
+        }
+
+        function getConsumoStatus(valor, meta, menorMelhor) {
+            if (valor == null || isNaN(valor)) return { ok: null, txt: '—' };
+            if (meta == null || isNaN(meta)) return { ok: null, txt: 'Sem meta' };
+            const dentro = menorMelhor ? (valor <= meta) : (valor >= meta);
+            return { ok: dentro, txt: dentro ? 'Dentro da meta' : 'Fora da meta' };
+        }
+
+        // ── Classificação de grupos ─────────────────────────────────────────
+        function classificarGrupoCaminhao(frota) { return consumoClassificacaoCaminhao[frota] || CONSUMO_SEM_CLASSIF; }
+        function classificarGrupoColhedora(frota) { return consumoClassificacaoColhedoras[frota] || CONSUMO_SEM_CLASSIF; }
+        function classificarGrupoTpl(frota) { return consumoClassificacaoTpl[frota] || CONSUMO_SEM_CLASSIF; }
+
+        // ── Persistência leve das metas/métricas (não falha se indisponível) ─
+        function consumoSalvarPrefs() {
+            const prefs = {
+                metasCam: consumoMetasCaminhao, metasCol: consumoMetasColhedoras, metasTpl: consumoMetasTpl,
+                metCam: consumoMetricaCaminhao, metCol: consumoMetricaColhedoras, metTpl: consumoMetricaTpl
+            };
+            try { localStorage.setItem('consumoPrefsV1', JSON.stringify(prefs)); } catch (_) { }
+            syncSaveField('consumoPrefs', prefs);
+        }
+        function consumoCarregarPrefs() {
+            try {
+                const p = JSON.parse(localStorage.getItem('consumoPrefsV1') || 'null');
+                if (!p) return;
+                if (p.metasCam) consumoMetasCaminhao = p.metasCam;
+                if (p.metasCol) consumoMetasColhedoras = p.metasCol;
+                if (p.metasTpl) consumoMetasTpl = p.metasTpl;
+                if (p.metCam) consumoMetricaCaminhao = p.metCam;
+                if (p.metCol) consumoMetricaColhedoras = p.metCol;
+                if (p.metTpl) consumoMetricaTpl = p.metTpl;
+            } catch (_) { }
+        }
+
+        // ── Processamento principal (chamado após selecionar a pasta) ───────
+        async function processConsumoFiles() {
+            consumoCarregarPrefs();
+            consumoClassificacaoCaminhao = {};
+            consumoClassificacaoColhedoras = {};
+            consumoClassificacaoTpl = {};
+            consumoCaminhaoData = [];
+            consumoColhedorasData = [];
+            consumoTplData = [];
+            consumoColunasCaminhao = [];
+            consumoColunasColhedoras = [];
+            consumoColunasTpl = [];
+            consumoPeriodoCaminhao = '';
+            consumoPeriodoColhedoras = '';
+            consumoPeriodoTpl = '';
+            consumoDataRelatorioCaminhao = '';
+            consumoDataRelatorioColhedoras = '';
+            consumoDataRelatorioTpl = '';
+            consumoProcessado = true;
+
+            try {
+                if (consumoArquivos.classCam) {
+                    const json = await readXlsxFile(consumoArquivos.classCam, true);
+                    consumoClassificacaoCaminhao = consumoParseClassificacao(json, 'caminhao');
+                }
+                if (consumoArquivos.classCol) {
+                    const json = await readXlsxFile(consumoArquivos.classCol, true);
+                    consumoClassificacaoColhedoras = consumoParseClassificacao(json, 'colhedoras');
+                }
+                if (consumoArquivos.classTpl) {
+                    const json = await readXlsxFile(consumoArquivos.classTpl, true);
+                    consumoClassificacaoTpl = consumoParseClassificacao(json, 'tpl');
+                }
+                if (consumoArquivos.consCam) {
+                    const json = await readXlsxFile(consumoArquivos.consCam, true);
+                    const cab = consumoExtrairPeriodoRelatorio(json);
+                    consumoPeriodoCaminhao = cab.periodo || '';
+                    consumoDataRelatorioCaminhao = cab.data || '';
+                    const res = consumoParseIndices(json);
+                    if (res) {
+                        consumoColunasCaminhao = consumoFiltrarColunasRelevantes(res.colunas);
+                        consumoCaminhaoData = res.registros.map(r => ({ frota: r.frota, grupo: classificarGrupoCaminhao(r.frota), metrics: r.metrics }));
+                    }
+                }
+                if (consumoArquivos.consCol) {
+                    const json = await readXlsxFile(consumoArquivos.consCol, true);
+                    const cab = consumoExtrairPeriodoRelatorio(json);
+                    consumoPeriodoColhedoras = cab.periodo || '';
+                    consumoDataRelatorioColhedoras = cab.data || '';
+                    const res = consumoParseIndices(json);
+                    if (res) {
+                        consumoColunasColhedoras = consumoFiltrarColunasRelevantes(res.colunas);
+                        consumoColhedorasData = res.registros.map(r => ({ frota: r.frota, grupo: classificarGrupoColhedora(r.frota), metrics: r.metrics }));
+                    }
+                }
+                if (consumoArquivos.consTplGlobal) {
+                    const json = await readXlsxFile(consumoArquivos.consTplGlobal, true);
+                    const cab = consumoExtrairPeriodoRelatorio(json);
+                    consumoPeriodoTpl = cab.periodo || '';
+                    consumoDataRelatorioTpl = cab.data || '';
+                    const res = consumoParseGlobalTpl(json);
+                    if (res) {
+                        consumoColunasTpl = consumoFiltrarColunasRelevantes(res.colunas);
+                        consumoTplData = res.registros
+                            .filter(r => consumoClassificacaoTpl[r.frota])
+                            .map(r => ({
+                                frota: r.frota,
+                                descricao: r.descricao || '',
+                                medicao: r.medicao || '',
+                                litro: r.litro,
+                                horaKm: r.horaKm,
+                                grupo: classificarGrupoTpl(r.frota),
+                                metrics: r.metrics
+                            }));
+                    }
+                }
+            } catch (err) {
+                console.warn('CONSUMO: falha ao processar arquivos:', err);
+            }
+
+            // métricas padrão (mantém escolha anterior se ainda existir)
+            if (!consumoMetricaCaminhao || consumoColunasCaminhao.indexOf(consumoMetricaCaminhao) < 0)
+                consumoMetricaCaminhao = detectarColunaConsumo(consumoColunasCaminhao, 'caminhao');
+            if (!consumoMetricaColhedoras || consumoColunasColhedoras.indexOf(consumoMetricaColhedoras) < 0)
+                consumoMetricaColhedoras = detectarColunaConsumo(consumoColunasColhedoras, 'colhedoras');
+            if (!consumoMetricaTpl || consumoColunasTpl.indexOf(consumoMetricaTpl) < 0)
+                consumoMetricaTpl = detectarColunaConsumo(consumoColunasTpl, 'tpl');
+
+            consumoAtualizarPeriodoSafra();
+
+            const abaConsumo = document.getElementById('main-consumo');
+            if (abaConsumo && abaConsumo.classList.contains('active')) renderConsumo();
+        }
+
+        // ── Estado derivado por subaba ──────────────────────────────────────
+        function consumoGetCtx(tipo) {
+            if (tipo === 'tpl') {
+                return {
+                    tipo: tipo,
+                    dados: consumoTplData,
+                    colunas: consumoColunasTpl,
+                    metrica: consumoMetricaTpl,
+                    metas: consumoMetasTpl,
+                    rotuloGrupo: 'Gestor/Grupo TPL',
+                    rotuloItem: 'frota TPL',
+                    rotuloItens: 'frotas TPL'
+                };
+            }
+            const cam = (tipo === 'caminhao');
+            return {
+                tipo: tipo,
+                dados: cam ? consumoCaminhaoData : consumoColhedorasData,
+                colunas: cam ? consumoColunasCaminhao : consumoColunasColhedoras,
+                metrica: cam ? consumoMetricaCaminhao : consumoMetricaColhedoras,
+                metas: cam ? consumoMetasCaminhao : consumoMetasColhedoras,
+                rotuloGrupo: cam ? 'Equipe/Grupo' : 'Grupo de Frente',
+                rotuloItem: cam ? 'caminhão' : 'colhedora',
+                rotuloItens: cam ? 'caminhões' : 'colhedoras'
+            };
+        }
+
+        function consumoAgruparDados(ctx) {
+            const grupos = {};
+            ctx.dados.forEach(d => {
+                const v = d.metrics[ctx.metrica];
+                if (v == null || isNaN(v)) return;
+                (grupos[d.grupo] = grupos[d.grupo] || []).push({
+                    frota: d.frota,
+                    grupo: d.grupo,
+                    valor: v,
+                    descricao: d.descricao || '',
+                    medicao: d.medicao || '',
+                    litro: d.litro,
+                    horaKm: d.horaKm
+                });
+            });
+            Object.values(grupos).forEach(arr => arr.sort((a, b) => b.valor - a.valor)); // maior → menor
+            const nomes = Object.keys(grupos).sort((a, b) => {
+                if (a === CONSUMO_SEM_CLASSIF) return 1;
+                if (b === CONSUMO_SEM_CLASSIF) return -1;
+                return a.localeCompare(b, 'pt-BR', { numeric: true });
+            });
+            return { grupos: grupos, nomes: nomes };
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  MÓDULO "CANAVIEIRO G" — subaba Caminhão: análise geral combinando
+        //  Rodotrem + Treminhão + Apoio no MESMO gráfico, cada categoria com
+        //  sua própria meta (Meta Rodotrem / Meta Treminhão / Meta Apoio),
+        //  desenhada como um segmento tracejado de cor própria.
+        // ═══════════════════════════════════════════════════════════════════
+        const CONSUMO_CANAVIEIRO_G_ORDEM = ['RODOTREM', 'TREMINHÃO', 'APOIO'];
+        const CONSUMO_CANAVIEIRO_G_CORES = { RODOTREM: '#0891b2', 'TREMINHÃO': '#7c3aed', APOIO: '#ea580c' };
+
+        // Localiza, entre os grupos já classificados (CAMINHÃO.xlsx), qual
+        // corresponde a cada categoria — por texto normalizado, então funciona
+        // com "RODOTREM", "TREMINHÃO"/"TREMIADO", "APOIO" (maiúsc./minúsc., acentos).
+        function consumoAcharGrupoCanavieiro(nomes) {
+            const lista = (nomes || []).map(n => ({ n: n, k: consumoNormalizarTexto(n) }));
+            const achar = re => { const f = lista.find(x => re.test(x.k)); return f ? f.n : null; };
+            return {
+                RODOTREM: achar(/rodotrem/),
+                'TREMINHÃO': achar(/tremi/),
+                APOIO: achar(/apoio/)
+            };
+        }
+
+        function consumoMetaCanavieiroG(ctx, categoria, itens) {
+            const chave = ctx.metrica + '|__canavieiroG__' + categoria;
+            if (ctx.metas[chave] != null && !isNaN(ctx.metas[chave])) return ctx.metas[chave];
+            const media = itens.length ? itens.reduce((s, x) => s + x.valor, 0) / itens.length : 0;
+            const def = Math.round(media * 100) / 100;
+            ctx.metas[chave] = def;
+            return def;
+        }
+
+        function consumoHtmlCanavieiroGeral(ctx, achados, grupos) {
+            let metaInputs = '';
+            CONSUMO_CANAVIEIRO_G_ORDEM.forEach(cat => {
+                const gNome = achados[cat];
+                if (!gNome || !grupos[gNome]) return;
+                const meta = consumoMetaCanavieiroG(ctx, cat, grupos[gNome]);
+                const cor = CONSUMO_CANAVIEIRO_G_CORES[cat];
+                metaInputs +=
+                    '<div class="consumo-meta-box"><label style="color:' + cor + ';">● Meta ' + consumoEscHtml(gNome) + ':</label>' +
+                    '<input type="number" step="0.01" value="' + meta + '" ' +
+                    'oninput="updateConsumoMetaCanavieiroG(\'' + cat + '\', this.value)"></div>';
+            });
+            return '<div class="consumo-grupo-bloco" style="border-top:3px solid #40800c;">' +
+                '<div class="consumo-grupo-header" style="flex-wrap:wrap;gap:10px;">' +
+                '<div class="consumo-grupo-titulo">🌾 Canavieiro G <span style="color:var(--text-muted-1);font-weight:700;font-size:11px;text-transform:none;">— análise geral: Rodotrem + Treminhão + Apoio no mesmo gráfico</span></div>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:10px;">' + metaInputs + '</div>' +
+                '</div>' +
+                '<div class="consumo-chart-wrap" style="height:380px;"><canvas id="consumo-caminhao-chart-canavieiroG"></canvas></div>' +
+                '<div class="consumo-mini-grid" id="consumo-caminhao-minis-canavieiroG"></div>' +
+                '</div>';
+        }
+
+        function consumoMontarItensCanavieiroG(ctx, achados, grupos) {
+            const itens = [], regioes = [];
+            CONSUMO_CANAVIEIRO_G_ORDEM.forEach(cat => {
+                const gNome = achados[cat];
+                if (!gNome || !grupos[gNome] || !grupos[gNome].length) return;
+                const ini = itens.length;
+                const meta = consumoMetaCanavieiroG(ctx, cat, grupos[gNome]);
+                grupos[gNome].forEach(x => itens.push({ frota: x.frota, categoria: cat, nomeGrupo: gNome, valor: x.valor, meta: meta }));
+                regioes.push({ cat: cat, nome: gNome, meta: meta, cor: CONSUMO_CANAVIEIRO_G_CORES[cat], ini: ini, fim: itens.length - 1 });
+            });
+            return { itens: itens, regioes: regioes };
+        }
+
+        function renderConsumoCanavieiroGeralGrafico(ctx, achados, grupos) {
+            const canvas = document.getElementById('consumo-caminhao-chart-canavieiroG');
+            if (!canvas) return;
+            const chartId = 'consumo-caminhao-chart-canavieiroG';
+            if (consumoCharts[chartId]) { consumoCharts[chartId].destroy(); delete consumoCharts[chartId]; }
+
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            const { itens, regioes } = consumoMontarItensCanavieiroG(ctx, achados, grupos);
+            if (!itens.length) return;
+
+            const labels = itens.map(x => x.frota);
+            const vals = itens.map(x => x.valor);
+            const cores = itens.map(x => {
+                const st = getConsumoStatus(x.valor, x.meta, menorMelhor);
+                return st.ok === null ? CONSUMO_COR_NEUTRA : (st.ok ? CONSUMO_COR_VERDE : CONSUMO_COR_VERMELHO);
+            });
+
+            // Plugin inline: uma linha de meta tracejada COLORIDA por categoria
+            // (Rodotrem/Treminhão/Apoio), mais divisórias verticais entre elas.
+            const consumoCanavieiroGPlugin = {
+                id: 'consumoCanavieiroGPlugin',
+                afterDatasetsDraw: function (chart) {
+                    const xs = chart.scales.x, ys = chart.scales.y, c = chart.ctx;
+                    if (!xs || !ys || !labels.length) return;
+                    const meio = labels.length > 1 ? (xs.getPixelForValue(1) - xs.getPixelForValue(0)) / 2
+                        : (xs.right - xs.left) / 2;
+                    c.save();
+                    regioes.forEach(function (r, idx) {
+                        const x0 = xs.getPixelForValue(r.ini) - meio;
+                        const x1 = xs.getPixelForValue(r.fim) + meio;
+                        if (r.meta != null && !isNaN(r.meta)) {
+                            const ym = ys.getPixelForValue(r.meta);
+                            if (ym >= ys.top && ym <= ys.bottom) {
+                                c.beginPath();
+                                c.setLineDash([7, 5]);
+                                c.lineWidth = 2.5;
+                                c.strokeStyle = r.cor;
+                                c.moveTo(x0, ym); c.lineTo(x1, ym);
+                                c.stroke();
+                                c.setLineDash([]);
+                            }
+                        }
+                        c.fillStyle = r.cor;
+                        c.font = 'bold 10px sans-serif';
+                        c.textAlign = 'center';
+                        c.fillText(r.nome, (x0 + x1) / 2, ys.top - 24);
+                        if (idx < regioes.length - 1) {
+                            c.beginPath();
+                            c.setLineDash([4, 4]);
+                            c.lineWidth = 1;
+                            c.strokeStyle = '#94a3b8';
+                            c.moveTo(x1, ys.top); c.lineTo(x1, ys.bottom + 4);
+                            c.stroke();
+                            c.setLineDash([]);
+                        }
+                    });
+                    c.restore();
+                }
+            };
+
+            consumoCharts[chartId] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        type: 'bar', label: ctx.metrica, data: vals, backgroundColor: cores,
+                        borderRadius: 6, maxBarThickness: 40,
+                        datalabels: {
+                            anchor: 'end', align: 'top', clamp: true,
+                            color: corDeTextoParaGrafico(), font: { weight: '800', size: 10 },
+                            formatter: v => consumoFmt(v)
+                        }
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 46 } },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: items => 'Frota ' + items[0].label,
+                                label: tt => {
+                                    const it = itens[tt.dataIndex];
+                                    const st = getConsumoStatus(it.valor, it.meta, menorMelhor);
+                                    const dif = (it.meta != null && !isNaN(it.meta)) ? (it.valor - it.meta) : null;
+                                    return [
+                                        'Categoria: ' + it.nomeGrupo,
+                                        ctx.metrica + ': ' + consumoFmt(it.valor),
+                                        'Meta ' + it.nomeGrupo + ': ' + consumoFmt(it.meta),
+                                        'Diferença: ' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)),
+                                        'Status: ' + st.txt
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { ticks: { font: { size: 9, weight: '700' }, autoSkip: false, maxRotation: 60, minRotation: 0 }, grid: { display: false } },
+                        y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: getToken('--chart-grid', '#f1f5f9') } }
+                    }
+                },
+                plugins: [consumoCanavieiroGPlugin]
+            });
+
+            const elMini = document.getElementById('consumo-caminhao-minis-canavieiroG');
+            if (elMini) {
+                let html = '';
+                regioes.forEach(function (r) {
+                    const itensCat = itens.filter(x => x.categoria === r.cat);
+                    const media = itensCat.reduce((s, x) => s + x.valor, 0) / itensCat.length;
+                    const dentro = itensCat.filter(x => getConsumoStatus(x.valor, r.meta, menorMelhor).ok === true).length;
+                    html += '<div class="consumo-mini" style="border-left:3px solid ' + r.cor + ';">' +
+                        '<div class="consumo-mini-val">' + consumoFmt(media) + '</div>' +
+                        '<div class="consumo-mini-lbl">' + consumoEscHtml(r.nome) + ' · ' + itensCat.length + ' veíc.</div>' +
+                        '<div style="font-size:10px;font-weight:700;margin-top:4px;">' +
+                        '<span style="color:#16a34a;">' + dentro + ' dentro</span> · ' +
+                        '<span style="color:#dc2626;">' + (itensCat.length - dentro) + ' fora</span></div>' +
+                        '</div>';
+                });
+                elMini.innerHTML = html;
+            }
+        }
+
+        function updateConsumoMetaCanavieiroG(categoria, valor) {
+            const ctx = consumoGetCtx('caminhao');
+            const num = parseFloat(String(valor).replace(',', '.'));
+            ctx.metas[ctx.metrica + '|__canavieiroG__' + categoria] = isNaN(num) ? null : num;
+            consumoSalvarPrefs();
+            const { grupos, nomes } = consumoAgruparDados(ctx);
+            const achados = consumoAcharGrupoCanavieiro(nomes);
+            renderConsumoCanavieiroGeralGrafico(ctx, achados, grupos);
+        }
+        // ═══════════════════════ FIM DO MÓDULO CANAVIEIRO G ═════════════════
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  Subaba Consumo TPL — grupo "FERTIRRIGAÇÃO": dois gráficos separados,
+        //  um para Tratores e outro para Motobombas (em vez de um único
+        //  gráfico misturando os dois tipos de equipamento).
+        // ═══════════════════════════════════════════════════════════════════
+        function consumoEhFertirrigacao(grupo) {
+            return /fertirrig/.test(consumoNormalizarTexto(grupo));
+        }
+
+        // Códigos de equipamento com erro de cadastro no sistema de origem
+        // (aparecem às vezes com descrição errada, ex.: 20123 "GERMEK"),
+        // mas que na prática são motobombas. Força a classificação correta
+        // independentemente do texto de descrição vindo do relatório.
+        const CONSUMO_CODIGOS_MOTOBOMBA_FORCADOS = ['20123'];
+        function consumoSepararFertirrig(itens) {
+            const tratores = [], motobombas = [];
+            (itens || []).forEach(x => {
+                const ehMotobomba = /MOTOBOMBA/i.test(x.descricao || '') ||
+                    CONSUMO_CODIGOS_MOTOBOMBA_FORCADOS.includes(String(x.frota || '').trim());
+                if (ehMotobomba) motobombas.push(x);
+                else tratores.push(x);
+            });
+            return { TRATORES: tratores, MOTOBOMBAS: motobombas };
+        }
+
+        function consumoMetaFertirrig(ctx, grupo, sub, itens) {
+            const chave = ctx.metrica + '|' + grupo + '__' + sub;
+            if (ctx.metas[chave] != null && !isNaN(ctx.metas[chave])) return ctx.metas[chave];
+            if (!itens.length) return null;
+            const media = itens.reduce((s, x) => s + x.valor, 0) / itens.length;
+            const def = Math.round(media * 100) / 100;
+            ctx.metas[chave] = def;
+            return def;
+        }
+
+        function consumoHtmlFertirrigacao(ctx, grupo, itens) {
+            const slug = consumoSlug(grupo);
+            const sep = consumoSepararFertirrig(itens);
+            const blocos = [
+                { key: 'TRATORES', titulo: '🚜 Tratores', itens: sep.TRATORES, cor: '#16a34a' },
+                { key: 'MOTOBOMBAS', titulo: '💧 Motobombas', itens: sep.MOTOBOMBAS, cor: '#0891b2' }
+            ];
+            let html = '<div class="consumo-grupo-bloco">' +
+                '<div class="consumo-grupo-header">' +
+                '<div class="consumo-grupo-titulo">' + consumoEscHtml(grupo) + ' <span style="color:var(--text-muted-1);font-weight:700;">(' + itens.length + ')</span></div>' +
+                '</div>' +
+                '<div class="consumo-fertirrig-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:10px;">';
+            blocos.forEach(function (b) {
+                if (!b.itens.length) {
+                    html += '<div class="consumo-grupo-bloco" style="margin:0;">' +
+                        '<div class="consumo-grupo-titulo" style="color:' + b.cor + ';">' + b.titulo + '</div>' +
+                        '<div class="consumo-msg-info" style="margin-top:10px;">Nenhum equipamento desta categoria neste grupo.</div>' +
+                        '</div>';
+                    return;
+                }
+                const meta = consumoMetaFertirrig(ctx, grupo, b.key, b.itens);
+                html += '<div class="consumo-grupo-bloco" style="margin:0;">' +
+                    '<div class="consumo-grupo-header">' +
+                    '<div class="consumo-grupo-titulo" style="color:' + b.cor + ';">' + b.titulo + ' <span style="color:var(--text-muted-1);font-weight:700;">(' + b.itens.length + ')</span></div>' +
+                    '<div class="consumo-meta-box"><label>Meta:</label>' +
+                    '<input type="number" step="0.01" value="' + (meta == null ? '' : meta) + '" ' +
+                    'oninput="updateConsumoMetaFertirrig(\'' + consumoEscHtml(grupo).replace(/'/g, "\\'") + '\', \'' + b.key + '\', this.value)"></div>' +
+                    '</div>' +
+                    '<div class="consumo-chart-wrap" style="height:300px;"><canvas id="consumo-tpl-chart-' + slug + '-' + b.key.toLowerCase() + '"></canvas></div>' +
+                    '<div class="consumo-mini-grid" id="consumo-tpl-minis-' + slug + '-' + b.key.toLowerCase() + '"></div>' +
+                    '</div>';
+            });
+            html += '</div></div>';
+            return html;
+        }
+
+        function renderConsumoGraficoFertirrigSub(ctx, canvasId, grupo, sub, itens) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            if (consumoCharts[canvasId]) { consumoCharts[canvasId].destroy(); delete consumoCharts[canvasId]; }
+            if (!itens.length) return;
+
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            const meta = consumoMetaFertirrig(ctx, grupo, sub, itens);
+            const labels = itens.map(x => x.frota);
+            const vals = itens.map(x => x.valor);
+            const cores = itens.map(x => {
+                const st = getConsumoStatus(x.valor, meta, menorMelhor);
+                return st.ok === null ? CONSUMO_COR_NEUTRA : (st.ok ? CONSUMO_COR_VERDE : CONSUMO_COR_VERMELHO);
+            });
+            const datasets = [{
+                type: 'bar', label: ctx.metrica, data: vals, backgroundColor: cores, borderRadius: 6, maxBarThickness: 40, order: 2,
+                datalabels: {
+                    anchor: 'end', align: 'top', clamp: true,
+                    color: corDeTextoParaGrafico(), font: { weight: '800', size: 10 },
+                    formatter: v => consumoFmt(v)
+                }
+            }];
+            if (meta != null && !isNaN(meta)) {
+                datasets.unshift({
+                    type: 'line', label: 'Meta', data: labels.map(() => meta),
+                    borderColor: corDeTextoParaGrafico(), borderDash: [7, 5], borderWidth: 2,
+                    pointRadius: 0, pointHitRadius: 0, fill: false, order: 1, datalabels: { display: false }
+                });
+            }
+            consumoCharts[canvasId] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: { labels: labels, datasets: datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false, layout: { padding: { top: 18 } },
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: { display: ctxDL => ctxDL.dataset.type === 'bar' },
+                        tooltip: {
+                            filter: item => item.dataset.type === 'bar',
+                            callbacks: {
+                                title: items => 'Frota ' + items[0].label,
+                                label: tt => {
+                                    const v = tt.raw;
+                                    const st = getConsumoStatus(v, meta, menorMelhor);
+                                    const dif = (meta != null && !isNaN(meta)) ? (v - meta) : null;
+                                    return [
+                                        ctx.metrica + ': ' + consumoFmt(v),
+                                        'Meta: ' + consumoFmt(meta),
+                                        'Diferença: ' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)),
+                                        'Status: ' + st.txt
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { ticks: { font: { size: 10, weight: '700' }, autoSkip: false, maxRotation: 60, minRotation: 0 }, grid: { display: false } },
+                        y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: getToken('--chart-grid', '#f1f5f9') } }
+                    }
+                }
+            });
+
+            const elMini = document.getElementById(canvasId.replace('-chart-', '-minis-'));
+            if (elMini) {
+                const total = itens.length;
+                const media = itens.reduce((s, x) => s + x.valor, 0) / total;
+                const dentro = itens.filter(x => getConsumoStatus(x.valor, meta, menorMelhor).ok === true).length;
+                elMini.innerHTML =
+                    consumoMini(total, 'Equipamentos') +
+                    consumoMini(consumoFmt(media), 'Média') +
+                    consumoMini('<span style="color:#16a34a;">' + dentro + '</span>', 'Dentro da meta') +
+                    consumoMini('<span style="color:#dc2626;">' + (total - dentro) + '</span>', 'Fora da meta');
+            }
+        }
+
+        function renderConsumoFertirrigacaoGraficos(ctx, grupo, itens) {
+            const slug = consumoSlug(grupo);
+            const sep = consumoSepararFertirrig(itens);
+            renderConsumoGraficoFertirrigSub(ctx, 'consumo-tpl-chart-' + slug + '-tratores', grupo, 'TRATORES', sep.TRATORES);
+            renderConsumoGraficoFertirrigSub(ctx, 'consumo-tpl-chart-' + slug + '-motobombas', grupo, 'MOTOBOMBAS', sep.MOTOBOMBAS);
+        }
+
+        function updateConsumoMetaFertirrig(grupo, sub, valor) {
+            const ctx = consumoGetCtx('tpl');
+            const num = parseFloat(String(valor).replace(',', '.'));
+            ctx.metas[ctx.metrica + '|' + grupo + '__' + sub] = isNaN(num) ? null : num;
+            consumoSalvarPrefs();
+            const { grupos } = consumoAgruparDados(ctx);
+            const itens = grupos[grupo] || [];
+            const sep = consumoSepararFertirrig(itens);
+            const slug = consumoSlug(grupo);
+            if (sub === 'TRATORES') renderConsumoGraficoFertirrigSub(ctx, 'consumo-tpl-chart-' + slug + '-tratores', grupo, 'TRATORES', sep.TRATORES);
+            else renderConsumoGraficoFertirrigSub(ctx, 'consumo-tpl-chart-' + slug + '-motobombas', grupo, 'MOTOBOMBAS', sep.MOTOBOMBAS);
+        }
+        // ══════════════════════ FIM DO MÓDULO FERTIRRIGAÇÃO ═════════════════
+
+        function consumoMetaDoGrupo(ctx, grupo, itens) {
+            const chave = ctx.metrica + '|' + grupo;
+            if (ctx.metas[chave] != null && !isNaN(ctx.metas[chave])) return ctx.metas[chave];
+            // padrão inicial: média do grupo
+            const media = itens.reduce((s, x) => s + x.valor, 0) / itens.length;
+            const def = Math.round(media * 100) / 100;
+            ctx.metas[chave] = def;
+            return def;
+        }
+
+        // ── Renderização ────────────────────────────────────────────────────
+        function destroyConsumoCharts(prefixo) {
+            Object.keys(consumoCharts).forEach(id => {
+                if (!prefixo || id.indexOf(prefixo) === 0) {
+                    try { consumoCharts[id].destroy(); } catch (_) { }
+                    delete consumoCharts[id];
+                }
+            });
+        }
+
+        function switchConsumoTab(tab) {
+            consumoAbaAtiva = tab;
+            document.querySelectorAll('.consumo-tab').forEach(t => t.classList.remove('active'));
+            const btn = document.getElementById('consumo-tab-' + tab);
+            if (btn) btn.classList.add('active');
+            document.getElementById('consumo-caminhao').classList.toggle('active', tab === 'caminhao');
+            document.getElementById('consumo-colhedoras').classList.toggle('active', tab === 'colhedoras');
+            const tplEl = document.getElementById('consumo-tpl');
+            if (tplEl) tplEl.classList.toggle('active', tab === 'tpl');
+            consumoAtualizarPeriodoSafra();
+            renderConsumoSubaba(tab);
+        }
+
+        function renderConsumo() {
+            renderConsumoStatusArquivos();
+            renderConsumoSubaba(consumoAbaAtiva);
+        }
+
+        function renderConsumoStatusArquivos() {
+            const box = document.getElementById('consumo-files-status');
+            if (!box) return;
+            if (!consumoProcessado) {
+                box.innerHTML = '<div class="consumo-msg-info">📁 Selecione a pasta de dados para carregar os arquivos de consumo (ConsumoCanavieiros / ConsumoColhedoras / Consumo Global) e de classificação (CAMINHÃO / Colhedoras / FrotasTPL).</div>';
+                return;
+            }
+            let html = '';
+            if (!consumoArquivos.consCam) html += '<div class="consumo-msg-erro">⚠️ Arquivo de consumo de caminhões não encontrado.</div>';
+            if (!consumoArquivos.consCol) html += '<div class="consumo-msg-erro">⚠️ Arquivo de consumo de colhedoras não encontrado.</div>';
+            if (consumoArquivos.consCam && !consumoArquivos.classCam)
+                html += '<div class="consumo-msg-warn">ℹ️ Arquivo de classificação de caminhões não encontrado. Os dados serão exibidos como SEM CLASSIFICAÇÃO.</div>';
+            if (consumoArquivos.consCol && !consumoArquivos.classCol)
+                html += '<div class="consumo-msg-warn">ℹ️ Arquivo de classificação de colhedoras não encontrado. Os dados serão exibidos como SEM CLASSIFICAÇÃO.</div>';
+            if (consumoAbaAtiva === 'tpl' && !consumoArquivos.consTplGlobal) html += '<div class="consumo-msg-erro">⚠️ Arquivo Consumo Global.xls não encontrado para a aba Consumo TPL.</div>';
+            if (consumoAbaAtiva === 'tpl' && consumoArquivos.consTplGlobal && !consumoArquivos.classTpl)
+                html += '<div class="consumo-msg-warn">ℹ️ Arquivo FrotasTPL.xlsx não encontrado. Não foi possível classificar as frotas TPL por grupo.</div>';
+            box.innerHTML = html;
+        }
+
+        function renderConsumoSubaba(tipo) {
+            if (tipo === 'caminhao') renderConsumoCaminhao();
+            else if (tipo === 'tpl') renderConsumoTpl();
+            else renderConsumoColhedoras();
+        }
+        function renderConsumoCaminhao() { renderConsumoTipo(consumoGetCtx('caminhao')); }
+        function renderConsumoColhedoras() { renderConsumoColhedorasUnico(consumoGetCtx('colhedoras')); }
+        function renderConsumoTpl() { renderConsumoTipo(consumoGetCtx('tpl')); }
+
+        // ── Chips de grupo (aparecem ao lado das subabas Caminhão/Colhedoras) ──
+        function renderConsumoChips(ctx, nomes, grupos) {
+            const box = document.getElementById('consumo-grupo-chips');
+            if (!box) return;
+            if (!ctx || (ctx.tipo !== 'caminhao' && ctx.tipo !== 'tpl') || !nomes || !nomes.length) { box.innerHTML = ''; return; }
+            const filtroFn = ctx.tipo === 'tpl' ? 'consumoFiltrarGrupoTpl' : 'consumoFiltrarGrupoCaminhao';
+            if (ctx.tipo === 'tpl' && consumoFiltroGrupoTpl !== 'TODOS' && nomes.indexOf(consumoFiltroGrupoTpl) < 0) consumoFiltroGrupoTpl = 'TODOS';
+            if (ctx.tipo === 'caminhao' && consumoFiltroGrupoCaminhao !== 'TODOS' && nomes.indexOf(consumoFiltroGrupoCaminhao) < 0) consumoFiltroGrupoCaminhao = 'TODOS';
+            const ativo = ctx.tipo === 'tpl' ? consumoFiltroGrupoTpl : consumoFiltroGrupoCaminhao;
+            const total = nomes.reduce((s, g) => s + grupos[g].length, 0);
+            const argTodos = JSON.stringify('TODOS').replace(/"/g, '&quot;');
+            let html = '<button class="consumo-chip' + (ativo === 'TODOS' ? ' active' : '') + '" ' +
+                'onclick="' + filtroFn + '(' + argTodos + ')">Todos<span class="chip-qtd">' + total + '</span></button>';
+            nomes.forEach(g => {
+                const arg = JSON.stringify(g).replace(/"/g, '&quot;');
+                html += '<button class="consumo-chip' + (ativo === g ? ' active' : '') + '" ' +
+                    'onclick="' + filtroFn + '(' + arg + ')">' +
+                    consumoEscHtml(g) + '<span class="chip-qtd">' + grupos[g].length + '</span></button>';
+            });
+            box.innerHTML = html;
+        }
+
+        function consumoFiltrarGrupoCaminhao(grupo) {
+            consumoFiltroGrupoCaminhao = grupo;
+            renderConsumoCaminhao();
+        }
+
+        function consumoFiltrarGrupoTpl(grupo) {
+            consumoFiltroGrupoTpl = grupo;
+            renderConsumoTpl();
+        }
+
+        // ── Preparação comum das subabas (limpa, valida, toolbar, agrupa) ──
+        function consumoPrepararSubaba(ctx) {
+            const base = 'consumo-' + ctx.tipo;
+            const els = {
+                msg: document.getElementById(base + '-msg'),
+                tool: document.getElementById(base + '-toolbar'),
+                cards: document.getElementById(base + '-cards'),
+                grupos: document.getElementById(base + '-grupos'),
+                tab: document.getElementById(base + '-tabela')
+            };
+            if (!els.grupos) return null;
+
+            destroyConsumoCharts(base);
+            els.msg.innerHTML = ''; els.tool.innerHTML = ''; els.cards.innerHTML = ''; els.grupos.innerHTML = ''; els.tab.innerHTML = '';
+
+            if (!consumoProcessado) { renderConsumoChips(null); return null; }
+
+            const temArquivo = (ctx.tipo === 'tpl') ? !!consumoArquivos.consTplGlobal : ((ctx.tipo === 'caminhao') ? !!consumoArquivos.consCam : !!consumoArquivos.consCol);
+            if (!temArquivo) {
+                renderConsumoChips(null);
+                els.msg.innerHTML = '<div class="consumo-msg-info">Sem dados de consumo de ' + ctx.rotuloItens + ' para exibir. Verifique se o arquivo está na pasta selecionada.</div>';
+                return null;
+            }
+            if (ctx.tipo === 'tpl' && !consumoArquivos.classTpl) {
+                renderConsumoChips(null);
+                els.msg.innerHTML = '<div class="consumo-msg-warn">Arquivo FrotasTPL.xlsx não encontrado. A aba Consumo TPL precisa desse arquivo para separar as frotas por gestor/grupo.</div>';
+                return null;
+            }
+            if (!ctx.dados.length || !ctx.metrica) {
+                renderConsumoChips(null);
+                els.msg.innerHTML = '<div class="consumo-msg-erro">Não foi encontrada coluna numérica de consumo para montar o gráfico.</div>';
+                return null;
+            }
+
+            // ── Toolbar: métrica + direção + exportação + legenda ──
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            const opcoes = ctx.colunas.map(c =>
+                '<option value="' + consumoEscHtml(c) + '"' + (c === ctx.metrica ? ' selected' : '') + '>' + consumoEscHtml(c) + '</option>').join('');
+            els.tool.innerHTML =
+                '<div class="consumo-toolbar">' +
+                '<label>Indicador:</label>' +
+                '<select onchange="consumoTrocarMetrica(\'' + ctx.tipo + '\', this.value)">' + opcoes + '</select>' +
+                '<span style="font-size:11px;font-weight:700;color:' + (menorMelhor ? '#16a34a' : '#0891b2') + ';">' +
+                (menorMelhor ? '▼ Menor é melhor' : '▲ Maior é melhor') + '</span>' +
+                '<div class="consumo-legenda">' +
+                '<span class="leg-verde">Dentro da meta</span>' +
+                '<span class="leg-vermelho">Fora da meta</span>' +
+                '<span class="leg-meta">Linha de meta</span>' +
+                '</div>' +
+                '</div>';
+
+            // ── Agrupamento ──
+            const { grupos, nomes } = consumoAgruparDados(ctx);
+            if (!nomes.length) {
+                renderConsumoChips(null);
+                els.msg.innerHTML = '<div class="consumo-msg-erro">Não foi encontrada coluna numérica de consumo para montar o gráfico.</div>';
+                return null;
+            }
+
+            // ── Alerta: frotas cadastradas sem consumo ──
+            const classif = ctx.tipo === 'tpl' ? consumoClassificacaoTpl : ((ctx.tipo === 'caminhao') ? consumoClassificacaoCaminhao : consumoClassificacaoColhedoras);
+            const comConsumo = new Set(ctx.dados.map(d => d.frota));
+            const semConsumo = Object.keys(classif).filter(f => !comConsumo.has(f));
+            if (semConsumo.length) {
+                const warnHtml = '<div class="consumo-msg-warn consumo-msg-auto" id="consumo-warn-' + ctx.tipo + '">⚠️ ' + semConsumo.length + ' frota(s) na classificação sem dado de consumo: ' +
+                    consumoEscHtml(semConsumo.slice(0, 15).join(', ')) + (semConsumo.length > 15 ? '…' : '') + '</div>';
+                els.msg.innerHTML = warnHtml;
+                setTimeout(function () {
+                    const el = document.getElementById('consumo-warn-' + ctx.tipo);
+                    if (el) { el.style.transition = 'opacity 0.5s'; el.style.opacity = '0'; setTimeout(function () { if (el) el.remove(); }, 500); }
+                }, 5000);
+            }
+
+            return { base: base, els: els, menorMelhor: menorMelhor, grupos: grupos, nomes: nomes };
+        }
+
+        // ── Subaba CAMINHÃO: blocos por grupo, filtráveis pelos chips ──────
+        function renderConsumoTipo(ctx) {
+            const prep = consumoPrepararSubaba(ctx);
+            if (!prep) return;
+            const base = prep.base, grupos = prep.grupos, menorMelhor = prep.menorMelhor;
+
+            // Chips de grupo ao lado das subabas + filtro ativo
+            renderConsumoChips(ctx, prep.nomes, grupos);
+            const nomes = (ctx.tipo === 'caminhao' && consumoFiltroGrupoCaminhao !== 'TODOS')
+                ? prep.nomes.filter(g => g === consumoFiltroGrupoCaminhao)
+                : (ctx.tipo === 'tpl' && consumoFiltroGrupoTpl !== 'TODOS')
+                    ? prep.nomes.filter(g => g === consumoFiltroGrupoTpl)
+                    : prep.nomes;
+
+            // ── Cards gerais (refletem o filtro ativo) ──
+            prep.els.cards.innerHTML = consumoHtmlCardsGerais(ctx, grupos, nomes, menorMelhor);
+
+            // ── Blocos por grupo ──
+            let htmlGrupos = '';
+            nomes.forEach(g => {
+                // Consumo TPL / FERTIRRIGAÇÃO: dois gráficos separados (Tratores e Motobombas)
+                if (ctx.tipo === 'tpl' && consumoEhFertirrigacao(g)) {
+                    htmlGrupos += consumoHtmlFertirrigacao(ctx, g, grupos[g]);
+                    return;
+                }
+                const slug = consumoSlug(g);
+                const meta = consumoMetaDoGrupo(ctx, g, grupos[g]);
+                htmlGrupos +=
+                    '<div class="consumo-grupo-bloco">' +
+                    '<div class="consumo-grupo-header">' +
+                    '<div class="consumo-grupo-titulo">' + consumoEscHtml(g) + ' <span style="color:var(--text-muted-1);font-weight:700;">(' + grupos[g].length + ')</span></div>' +
+                    '<div class="consumo-meta-box"><label>Meta ' + consumoEscHtml(g) + ':</label>' +
+                    '<input type="number" step="0.01" value="' + meta + '" ' +
+                    'oninput="' + (ctx.tipo === 'tpl' ? 'updateConsumoMetaTpl' : (ctx.tipo === 'caminhao' ? 'updateConsumoMetaCaminhao' : 'updateConsumoMetaColhedoras')) + '(\'' + consumoEscHtml(g).replace(/'/g, "\\'") + '\', this.value)">' +
+                    '</div>' +
+                    '</div>' +
+                    '<div class="consumo-chart-wrap"><canvas id="' + base + '-chart-' + slug + '"></canvas></div>' +
+                    '<div class="consumo-mini-grid" id="' + base + '-minis-' + slug + '"></div>' +
+                    '</div>';
+            });
+
+            // Módulo "Canavieiro G" — só na subaba Caminhão, análise geral combinando
+            // Rodotrem + Treminhão + Apoio. Antes aparecia sempre que a aba Caminhões
+            // estava ativa, mesmo com o chip "SEM CLASSIFICAÇÃO" selecionado — nesse
+            // caso o gráfico combinado (que sempre junta as 3 categorias) não tem
+            // relação com o que está filtrado na tela.
+            //
+            // TENTATIVA ANTERIOR (ERRADA): comparava consumoFiltroGrupoCaminhao contra
+            // uma lista fixa ['RODOTREM','TREMINHÃO','APOIO'] em maiúsculas — mas esses
+            // são só os NOMES INTERNOS DA CATEGORIA. O valor real do chip vem direto do
+            // texto classificado na planilha (ex.: "Rodotrem", "Tremiado", "Apoio", com
+            // capitalização e grafia que variam por arquivo) e nunca batia com a lista
+            // fixa — por isso o bloco sumia com QUALQUER chip selecionado, inclusive os
+            // 3 que deveriam mostrá-lo. Corrigido comparando contra os nomes REAIS já
+            // encontrados por consumoAcharGrupoCanavieiro (que faz esse casamento fuzzy
+            // por texto normalizado), em vez de uma lista fixa.
+            let canavieiroAchados = null;
+            if (ctx.tipo === 'caminhao') {
+                const achadosBrutos = consumoAcharGrupoCanavieiro(prep.nomes);
+                const nomesReaisCanavieiro = Object.values(achadosBrutos).filter(Boolean);
+                const chipMostraCanavieiro = consumoFiltroGrupoCaminhao === 'TODOS'
+                    || nomesReaisCanavieiro.indexOf(consumoFiltroGrupoCaminhao) >= 0;
+                if (chipMostraCanavieiro && nomesReaisCanavieiro.length) {
+                    canavieiroAchados = achadosBrutos;
+                    htmlGrupos += consumoHtmlCanavieiroGeral(ctx, canavieiroAchados, prep.grupos);
+                }
+            }
+
+            prep.els.grupos.innerHTML = htmlGrupos;
+
+            // gráficos + mini-cards
+            nomes.forEach(g => {
+                if (ctx.tipo === 'tpl' && consumoEhFertirrigacao(g)) {
+                    renderConsumoFertirrigacaoGraficos(ctx, g, grupos[g]);
+                    return;
+                }
+                renderConsumoGrafico(ctx, g, grupos[g]);
+                renderConsumoMinis(ctx, g, grupos[g]);
+            });
+            if (canavieiroAchados) renderConsumoCanavieiroGeralGrafico(ctx, canavieiroAchados, prep.grupos);
+
+            // ── Tabela detalhada ──
+            prep.els.tab.innerHTML = consumoHtmlTabela(ctx, grupos, nomes, menorMelhor);
+        }
+
+        // ── Subaba COLHEDORAS: gráfico ÚNICO com todas as máquinas, ────────
+        //    separadas visualmente por Frente (meta ÚNICA para todas as frentes)
+        function renderConsumoColhedorasUnico(ctx) {
+            const prep = consumoPrepararSubaba(ctx);
+            if (!prep) return;
+            const grupos = prep.grupos, nomes = prep.nomes, menorMelhor = prep.menorMelhor;
+
+            renderConsumoChips(null); // chips de grupo são exclusivos da subaba Caminhão
+
+            // ── Meta global única para todas as frentes ──
+            // Usa a primeira frente como referência da meta global
+            const chaveGlobal = ctx.metrica + '|__global__';
+            if (ctx.metas[chaveGlobal] == null) {
+                // padrão inicial: média geral de todas as colhedoras
+                const todos = nomes.flatMap(g => grupos[g]);
+                const mediaGeral = todos.reduce((s, x) => s + x.valor, 0) / (todos.length || 1);
+                ctx.metas[chaveGlobal] = Math.round(mediaGeral * 100) / 100;
+            }
+            // Sincroniza a meta global para todas as frentes
+            const metaGlobal = ctx.metas[chaveGlobal];
+            nomes.forEach(g => ctx.metas[ctx.metrica + '|' + g] = metaGlobal);
+
+            // ── Cards gerais ──
+            prep.els.cards.innerHTML = consumoHtmlCardsGerais(ctx, grupos, nomes, menorMelhor);
+
+            // ── Bloco do gráfico único com input de meta única ──
+            prep.els.grupos.innerHTML =
+                '<div class="consumo-grupo-bloco">' +
+                '<div class="consumo-grupo-header">' +
+                '<div class="consumo-grupo-titulo">Colhedoras por Frente <span style="color:#94a3b8;font-weight:700;">(' +
+                nomes.reduce((s, g) => s + grupos[g].length, 0) + ' máquinas · ' + nomes.length + ' frentes)</span></div>' +
+                '<div class="consumo-meta-box"><label>Meta Frente:</label>' +
+                '<input type="number" step="0.01" value="' + metaGlobal + '" ' +
+                'oninput="updateConsumoMetaColhedorasGlobal(this.value)">' +
+                '</div>' +
+                '</div>' +
+                '<div class="consumo-chart-wrap" style="height:380px;"><canvas id="consumo-colhedoras-chart-unico"></canvas></div>' +
+                '<div id="consumo-colhedoras-frente-labels" class="consumo-frente-labels"></div>' +
+                '<div class="consumo-mini-grid" id="consumo-colhedoras-minis-frentes"></div>' +
+                '</div>';
+
+            renderConsumoGraficoUnicoColhedoras(ctx, grupos, nomes);
+            renderConsumoFrenteLabels(grupos, nomes, menorMelhor, metaGlobal);
+            renderConsumoMinisFrentes(ctx, grupos, nomes);
+
+            // ── Tabela detalhada ──
+            prep.els.tab.innerHTML = consumoHtmlTabelaColhedoras(ctx, grupos, nomes, menorMelhor);
+        }
+
+        // Gráfico único: X = frotas agrupadas por frente; divisórias verticais,
+        // rótulo da frente e segmento de meta desenhados por plugin inline.
+        function renderConsumoGraficoUnicoColhedoras(ctx, grupos, nomes) {
+            const canvas = document.getElementById('consumo-colhedoras-chart-unico');
+            if (!canvas) return;
+            const chartId = 'consumo-colhedoras-chart-unico';
+            if (consumoCharts[chartId]) { consumoCharts[chartId].destroy(); delete consumoCharts[chartId]; }
+
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+
+            // Itens em sequência: frentes na ordem, máquinas maior→menor dentro de cada frente
+            const itens = [], regioes = [];
+            const chaveMeta = ctx.metrica + '|__global__';
+            const metaGlobal = ctx.metas[chaveMeta];
+            nomes.forEach(g => {
+                const ini = itens.length;
+                const meta = ctx.metas[ctx.metrica + '|' + g];
+                grupos[g].forEach(x => itens.push({ frota: x.frota, grupo: g, valor: x.valor, meta: meta }));
+                regioes.push({ nome: g, meta: meta, ini: ini, fim: itens.length - 1 });
+            });
+
+            const labels = itens.map(x => x.frota);
+            const vals = itens.map(x => x.valor);
+            const cores = itens.map(x => {
+                const st = getConsumoStatus(x.valor, x.meta, menorMelhor);
+                return st.ok === null ? CONSUMO_COR_NEUTRA : (st.ok ? CONSUMO_COR_VERDE : CONSUMO_COR_VERMELHO);
+            });
+
+            // Plugin inline: divisórias entre frentes e linha de meta por região (sem rótulo no topo)
+            const consumoFrentePlugin = {
+                id: 'consumoFrentePlugin',
+                afterDatasetsDraw: function (chart) {
+                    const xs = chart.scales.x, ys = chart.scales.y, c = chart.ctx;
+                    if (!xs || !ys || !labels.length) return;
+                    const meio = labels.length > 1 ? (xs.getPixelForValue(1) - xs.getPixelForValue(0)) / 2
+                        : (xs.right - xs.left) / 2;
+                    c.save();
+                    regioes.forEach(function (r, idx) {
+                        const x0 = xs.getPixelForValue(r.ini) - meio;
+                        const x1 = xs.getPixelForValue(r.fim) + meio;
+                        // linha de meta por frente
+                        if (r.meta != null && !isNaN(r.meta)) {
+                            const ym = ys.getPixelForValue(r.meta);
+                            if (ym >= ys.top && ym <= ys.bottom) {
+                                c.beginPath();
+                                c.setLineDash([7, 5]);
+                                c.lineWidth = 2;
+                                c.strokeStyle = corDeTextoParaGrafico();
+                                c.moveTo(x0, ym); c.lineTo(x1, ym);
+                                c.stroke();
+                                c.setLineDash([]);
+                            }
+                        }
+                        // divisória vertical entre frentes
+                        if (idx < regioes.length - 1) {
+                            c.beginPath();
+                            c.setLineDash([4, 4]);
+                            c.lineWidth = 1;
+                            c.strokeStyle = '#94a3b8';
+                            c.moveTo(x1, ys.top); c.lineTo(x1, ys.bottom + 4);
+                            c.stroke();
+                            c.setLineDash([]);
+                        }
+                    });
+                    c.restore();
+                }
+            };
+
+            consumoCharts[chartId] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        type: 'bar',
+                        label: ctx.metrica,
+                        data: vals,
+                        backgroundColor: cores,
+                        borderRadius: 6,
+                        maxBarThickness: 46,
+                        datalabels: {
+                            anchor: 'end', align: 'top', clamp: true,
+                            color: corDeTextoParaGrafico(), font: { weight: '800', size: 10 },
+                            formatter: function (v) { return consumoFmt(v); }
+                        }
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 40 } },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: function (items) { return 'Frota ' + items[0].label; },
+                                label: function (tt) {
+                                    const it = itens[tt.dataIndex];
+                                    const st = getConsumoStatus(it.valor, it.meta, menorMelhor);
+                                    const dif = (it.meta != null && !isNaN(it.meta)) ? (it.valor - it.meta) : null;
+                                    return [
+                                        ctx.rotuloGrupo + ': ' + it.grupo,
+                                        'Consumo (' + ctx.metrica + '): ' + consumoFmt(it.valor),
+                                        'Meta: ' + consumoFmt(it.meta),
+                                        'Diferença p/ meta: ' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)),
+                                        'Status: ' + st.txt
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { ticks: { font: { size: 10, weight: '700' }, autoSkip: false, maxRotation: 60, minRotation: 0 }, grid: { display: false } },
+                        y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: getToken('--chart-grid', '#f1f5f9') } }
+                    }
+                },
+                plugins: [consumoFrentePlugin]
+            });
+        }
+
+        // Labels interativos de frente — abaixo do gráfico, hover destaca o grupo
+        function renderConsumoFrenteLabels(grupos, nomes, menorMelhor, metaGlobal) {
+            const el = document.getElementById('consumo-colhedoras-frente-labels');
+            if (!el) return;
+            let html = '';
+            nomes.forEach(function (g) {
+                const frotas = grupos[g].map(function (x) { return x.frota; }).join(',');
+                const slug = consumoSlug(g);
+                const total = grupos[g].length;
+                const dentro = grupos[g].filter(function (x) {
+                    return getConsumoStatus(x.valor, metaGlobal, menorMelhor).ok === true;
+                }).length;
+                html += '<span class="consumo-frente-label" data-frotas="' + frotas + '" data-slug="' + slug + '" ' +
+                    'onmouseenter="consumoFrenteHover(this,true)" onmouseleave="consumoFrenteHover(this,false)">' +
+                    consumoEscHtml(g) +
+                    '<span class="frente-lbl-info">(' + total + ' · <span style="color:#16a34a;">' + dentro + '</span>/<span style="color:#dc2626;">' + (total - dentro) + '</span>)</span>' +
+                    '</span>';
+            });
+            el.innerHTML = html;
+        }
+
+        function consumoFrenteHover(el, ativo) {
+            const chart = consumoCharts['consumo-colhedoras-chart-unico'];
+            if (!chart) return;
+            const frotas = el.getAttribute('data-frotas').split(',');
+            const labels = chart.data.labels;
+            const ds = chart.data.datasets[0];
+            if (!ds || !ds._backup) {
+                if (ativo) {
+                    ds._backup = ds.backgroundColor.slice();
+                    ds.backgroundColor = labels.map(function (l, i) {
+                        return frotas.indexOf(l) >= 0 ? ds._backup[i] : 'rgba(203,213,225,0.3)';
+                    });
+                    chart.update('none');
+                }
+            } else if (!ativo) {
+                ds.backgroundColor = ds._backup;
+                delete ds._backup;
+                chart.update('none');
+            }
+            document.querySelectorAll('.consumo-frente-label').forEach(function (b) {
+                b.classList.toggle('hover-ativo', ativo && b === el);
+            });
+        }
+
+        // Atualiza meta global (única para todas as frentes) e re-renderiza
+        function updateConsumoMetaColhedorasGlobal(valor) {
+            const ctx = consumoGetCtx('colhedoras');
+            const num = parseFloat(String(valor).replace(',', '.'));
+            const chaveGlobal = ctx.metrica + '|__global__';
+            ctx.metas[chaveGlobal] = isNaN(num) ? null : num;
+            const metaGlobal = ctx.metas[chaveGlobal];
+            consumoSalvarPrefs();
+            const { grupos, nomes } = consumoAgruparDados(ctx);
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            // Sincroniza meta em todas as frentes
+            nomes.forEach(function (g) { ctx.metas[ctx.metrica + '|' + g] = metaGlobal; });
+            renderConsumoGraficoUnicoColhedoras(ctx, grupos, nomes);
+            renderConsumoFrenteLabels(grupos, nomes, menorMelhor, metaGlobal);
+            renderConsumoMinisFrentes(ctx, grupos, nomes);
+            const elCards = document.getElementById('consumo-colhedoras-cards');
+            if (elCards) elCards.innerHTML = consumoHtmlCardsGerais(ctx, grupos, nomes, menorMelhor);
+            const elTab = document.getElementById('consumo-colhedoras-tabela');
+            if (elTab) elTab.innerHTML = consumoHtmlTabelaColhedoras(ctx, grupos, nomes, menorMelhor);
+        }
+
+        // Mini-cards compactos por frente (abaixo do gráfico único)
+        function renderConsumoMinisFrentes(ctx, grupos, nomes) {
+            const el = document.getElementById('consumo-colhedoras-minis-frentes');
+            if (!el) return;
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            let html = '';
+            nomes.forEach(g => {
+                const meta = ctx.metas[ctx.metrica + '|' + g];
+                const itens = grupos[g];
+                const media = itens.reduce((s, x) => s + x.valor, 0) / itens.length;
+                const dentro = itens.filter(x => getConsumoStatus(x.valor, meta, menorMelhor).ok === true).length;
+                const pct = itens.length ? (dentro / itens.length * 100) : 0;
+                html += '<div class="consumo-mini">' +
+                    '<div class="consumo-mini-val">' + consumoFmt(media) + '</div>' +
+                    '<div class="consumo-mini-lbl">' + consumoEscHtml(g) + ' · ' + itens.length + ' máq.</div>' +
+                    '<div style="font-size:10px;font-weight:700;margin-top:4px;">' +
+                    '<span style="color:#16a34a;">' + dentro + ' dentro</span> · ' +
+                    '<span style="color:#dc2626;">' + (itens.length - dentro) + ' fora</span> · ' +
+                    consumoFmt(pct, 0) + '%</div>' +
+                    '</div>';
+            });
+            el.innerHTML = html;
+        }
+
+        // ── Cards gerais da subaba ──────────────────────────────────────────
+        function consumoHtmlCardsGerais(ctx, grupos, nomes, menorMelhor) {
+            const todos = [];
+            nomes.forEach(g => {
+                const meta = consumoMetaDoGrupo(ctx, g, grupos[g]);
+                grupos[g].forEach(x => todos.push({ frota: x.frota, grupo: g, valor: x.valor, meta: meta }));
+            });
+            if (!todos.length) return '';
+            const total = todos.length;
+            const media = todos.reduce((s, x) => s + x.valor, 0) / total;
+            if (ctx.tipo === 'tpl') {
+                const totalLitros = todos.reduce((s, x) => s + (x.litro != null && !isNaN(x.litro) ? x.litro : 0), 0);
+                const totalHoraKm = todos.reduce((s, x) => s + (x.horaKm != null && !isNaN(x.horaKm) ? x.horaKm : 0), 0);
+                const gruposQtd = nomes.length;
+                const horimetro = todos.filter(x => x.medicao === 'Horímetro').length;
+                const hodometro = todos.filter(x => x.medicao === 'Hodômetro').length;
+                const ordTpl = todos.slice().sort((a, b) => consumoMenorMelhor(ctx.metrica) ? a.valor - b.valor : b.valor - a.valor);
+                const melhorTpl = ordTpl[0], piorTpl = ordTpl[ordTpl.length - 1];
+                return '<div class="consumo-cards-grid">' +
+                    consumoKpi(total, 'Frotas TPL') +
+                    consumoKpi(gruposQtd, 'Grupos/Gestores') +
+                    consumoKpi(consumoFmt(totalLitros), 'Litros totais') +
+                    consumoKpi(consumoFmt(totalHoraKm), 'Horas/KM total') +
+                    consumoKpi(consumoFmt(media), 'Média (' + consumoEscHtml(ctx.metrica) + ')') +
+                    consumoKpi(horimetro + ' / ' + hodometro, 'Horímetro / Hodômetro') +
+                    consumoKpi(consumoEscHtml(melhorTpl.frota) + '<div style="font-size:11px;color:#16a34a;">' + consumoFmt(melhorTpl.valor) + '</div>', 'Melhor frota') +
+                    consumoKpi(consumoEscHtml(piorTpl.frota) + '<div style="font-size:11px;color:#dc2626;">' + consumoFmt(piorTpl.valor) + '</div>', 'Pior frota') +
+                    '</div>';
+            }
+            const dentro = todos.filter(x => getConsumoStatus(x.valor, x.meta, menorMelhor).ok === true).length;
+            const fora = total - dentro;
+            const pct = total ? (dentro / total * 100) : 0;
+            const ord = todos.slice().sort((a, b) => menorMelhor ? a.valor - b.valor : b.valor - a.valor);
+            const melhor = ord[0], pior = ord[ord.length - 1];
+
+            return '<div class="consumo-cards-grid">' +
+                consumoKpi(total, 'Total de ' + ctx.rotuloItens) +
+                consumoKpi(consumoFmt(media), 'Média geral (' + consumoEscHtml(ctx.metrica) + ')') +
+                consumoKpi('<span style="color:#16a34a;">' + dentro + '</span>', 'Dentro da meta') +
+                consumoKpi('<span style="color:#dc2626;">' + fora + '</span>', 'Fora da meta') +
+                consumoKpi(consumoFmt(pct, 1) + '%', 'Aderência à meta') +
+                consumoKpi(consumoEscHtml(melhor.frota) + '<div style="font-size:11px;color:#16a34a;">' + consumoFmt(melhor.valor) + '</div>', 'Melhor ' + ctx.rotuloItem) +
+                consumoKpi(consumoEscHtml(pior.frota) + '<div style="font-size:11px;color:#dc2626;">' + consumoFmt(pior.valor) + '</div>', 'Pior ' + ctx.rotuloItem) +
+                '</div>';
+        }
+        function consumoKpi(val, lbl) {
+            return '<div class="consumo-kpi"><div class="consumo-kpi-val">' + val + '</div><div class="consumo-kpi-lbl">' + lbl + '</div></div>';
+        }
+
+        // ── Gráfico de barras por grupo (X = frota, Y = consumo) ────────────
+        function renderConsumoGrafico(ctx, grupo, itens) {
+            const base = 'consumo-' + ctx.tipo;
+            const slug = consumoSlug(grupo);
+            const canvas = document.getElementById(base + '-chart-' + slug);
+            if (!canvas) return;
+
+            const chartId = base + '-chart-' + slug;
+            if (consumoCharts[chartId]) { consumoCharts[chartId].destroy(); delete consumoCharts[chartId]; }
+
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            const chave = ctx.metrica + '|' + grupo;
+            const meta = ctx.metas[chave];
+            const labels = itens.map(x => x.frota);
+            const vals = itens.map(x => x.valor);
+            const cores = itens.map(x => {
+                const st = getConsumoStatus(x.valor, meta, menorMelhor);
+                return st.ok === null ? CONSUMO_COR_NEUTRA : (st.ok ? CONSUMO_COR_VERDE : CONSUMO_COR_VERMELHO);
+            });
+
+            const datasets = [{
+                type: 'bar',
+                label: ctx.metrica,
+                data: vals,
+                backgroundColor: cores,
+                borderRadius: 6,
+                maxBarThickness: 46,
+                order: 2,
+                datalabels: {
+                    anchor: 'end', align: 'top', clamp: true,
+                    color: corDeTextoParaGrafico(), font: { weight: '800', size: 10 },
+                    formatter: v => consumoFmt(v)
+                }
+            }];
+            if (meta != null && !isNaN(meta)) {
+                datasets.unshift({
+                    type: 'line',
+                    label: 'Meta',
+                    data: labels.map(() => meta),
+                    borderColor: corDeTextoParaGrafico(),
+                    borderDash: [7, 5],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHitRadius: 0,
+                    fill: false,
+                    order: 1,
+                    datalabels: { display: false }
+                });
+            }
+
+            consumoCharts[chartId] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: { labels: labels, datasets: datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 18 } },
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: { display: ctxDL => ctxDL.dataset.type === 'bar' },
+                        tooltip: {
+                            filter: item => item.dataset.type === 'bar',
+                            callbacks: {
+                                title: items => 'Frota ' + items[0].label,
+                                label: tt => {
+                                    const v = tt.raw;
+                                    const st = getConsumoStatus(v, meta, menorMelhor);
+                                    const dif = (meta != null && !isNaN(meta)) ? (v - meta) : null;
+                                    return [
+                                        ctx.rotuloGrupo + ': ' + grupo,
+                                        'Consumo (' + ctx.metrica + '): ' + consumoFmt(v),
+                                        'Meta: ' + consumoFmt(meta),
+                                        'Diferença p/ meta: ' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)),
+                                        'Status: ' + st.txt
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { ticks: { font: { size: 10, weight: '700' }, autoSkip: false, maxRotation: 60, minRotation: 0 }, grid: { display: false } },
+                        y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: getToken('--chart-grid', '#f1f5f9') } }
+                    }
+                }
+            });
+        }
+
+        // ── Mini-cards do grupo ─────────────────────────────────────────────
+        function renderConsumoMinis(ctx, grupo, itens) {
+            const base = 'consumo-' + ctx.tipo;
+            const el = document.getElementById(base + '-minis-' + consumoSlug(grupo));
+            if (!el) return;
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            const meta = ctx.metas[ctx.metrica + '|' + grupo];
+            const total = itens.length;
+            const media = itens.reduce((s, x) => s + x.valor, 0) / total;
+            const dentro = itens.filter(x => getConsumoStatus(x.valor, meta, menorMelhor).ok === true).length;
+            const fora = total - dentro;
+            const pct = total ? (dentro / total * 100) : 0;
+            const ord = itens.slice().sort((a, b) => menorMelhor ? a.valor - b.valor : b.valor - a.valor);
+
+            el.innerHTML =
+                consumoMini(total, 'Frotas no grupo') +
+                consumoMini(consumoFmt(media), 'Média do grupo') +
+                consumoMini(consumoEscHtml(ord[0].frota) + ' <span style="color:#16a34a;font-size:11px;">' + consumoFmt(ord[0].valor) + '</span>', 'Melhor frota') +
+                consumoMini(consumoEscHtml(ord[ord.length - 1].frota) + ' <span style="color:#dc2626;font-size:11px;">' + consumoFmt(ord[ord.length - 1].valor) + '</span>', 'Pior frota') +
+                consumoMini('<span style="color:#16a34a;">' + dentro + '</span>', 'Dentro da meta') +
+                consumoMini('<span style="color:#dc2626;">' + fora + '</span>', 'Fora da meta') +
+                consumoMini(consumoFmt(pct, 1) + '%', 'Aderência');
+        }
+        function consumoMini(val, lbl) {
+            return '<div class="consumo-mini"><div class="consumo-mini-val">' + val + '</div><div class="consumo-mini-lbl">' + lbl + '</div></div>';
+        }
+
+        // ── Tabela detalhada ────────────────────────────────────────────────
+        function consumoHtmlTabelaColhedoras(ctx, grupos, nomes, menorMelhor) {
+            let linhas = '';
+            nomes.forEach(g => {
+                const meta = ctx.metas[ctx.metrica + '|' + g];
+                grupos[g].forEach(x => {
+                    const st = getConsumoStatus(x.valor, meta, menorMelhor);
+                    const dif = (meta != null && !isNaN(meta)) ? (x.valor - meta) : null;
+                    const badge = st.ok === null
+                        ? '<span class="status-badge" style="background:#f1f5f9;color:#64748b;">' + st.txt + '</span>'
+                        : '<span class="status-badge ' + (st.ok ? 'consumo-badge-dentro' : 'consumo-badge-fora') + '">' + st.txt + '</span>';
+                    const difCls = st.ok === null ? '' : (st.ok ? 'consumo-dif-neg' : 'consumo-dif-pos');
+                    linhas += '<tr>' +
+                        '<td style="font-weight:700;">' + consumoEscHtml(x.frota) + '</td>' +
+                        '<td>' + consumoEscHtml(g) + '</td>' +
+                        '<td style="font-weight:700;">' + consumoFmt(x.valor) + '</td>' +
+                        '<td class="' + difCls + '">' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)) + '</td>' +
+                        '<td>' + badge + '</td>' +
+                        '</tr>';
+                });
+            });
+            return '<div class="card">' +
+                '<div class="section-title">📋 Detalhamento — Colhedoras (' + consumoEscHtml(ctx.metrica) + ')</div>' +
+                '<div class="table-container"><table>' +
+                '<thead><tr><th>Frota</th><th>Grupo de Frente</th><th>Consumo</th><th>Diferença p/ meta</th><th>Status</th></tr></thead>' +
+                '<tbody>' + linhas + '</tbody>' +
+                '</table></div></div>';
+        }
+
+        function consumoHtmlTabela(ctx, grupos, nomes, menorMelhor) {
+            if (ctx.tipo === 'tpl') return consumoHtmlTabelaTpl(ctx, grupos, nomes, menorMelhor);
+            let linhas = '';
+            nomes.forEach(g => {
+                const meta = ctx.metas[ctx.metrica + '|' + g];
+                grupos[g].forEach(x => {
+                    const st = getConsumoStatus(x.valor, meta, menorMelhor);
+                    const dif = (meta != null && !isNaN(meta)) ? (x.valor - meta) : null;
+                    const badge = st.ok === null
+                        ? '<span class="status-badge" style="background:#f1f5f9;color:#64748b;">' + st.txt + '</span>'
+                        : '<span class="status-badge ' + (st.ok ? 'consumo-badge-dentro' : 'consumo-badge-fora') + '">' + st.txt + '</span>';
+                    const difCls = st.ok === null ? '' : (st.ok ? 'consumo-dif-neg' : 'consumo-dif-pos');
+                    linhas += '<tr>' +
+                        '<td style="font-weight:700;">' + consumoEscHtml(x.frota) + '</td>' +
+                        '<td>' + consumoEscHtml(g) + '</td>' +
+                        '<td style="font-weight:700;">' + consumoFmt(x.valor) + '</td>' +
+                        '<td>' + consumoFmt(meta) + '</td>' +
+                        '<td class="' + difCls + '">' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)) + '</td>' +
+                        '<td>' + badge + '</td>' +
+                        '</tr>';
+                });
+            });
+            return '<div class="card">' +
+                '<div class="section-title">📋 Detalhamento — ' + (ctx.tipo === 'caminhao' ? 'Caminhões' : 'Colhedoras') + ' (' + consumoEscHtml(ctx.metrica) + ')</div>' +
+                '<div class="table-container"><table>' +
+                '<thead><tr><th>Frota</th><th>' + ctx.rotuloGrupo + '</th><th>Consumo</th><th>Meta</th><th>Diferença p/ meta</th><th>Status</th></tr></thead>' +
+                '<tbody>' + linhas + '</tbody>' +
+                '</table></div></div>';
+        }
+
+
+        function consumoHtmlTabelaTpl(ctx, grupos, nomes, menorMelhor) {
+            let linhas = '';
+            nomes.forEach(g => {
+                const meta = ctx.metas[ctx.metrica + '|' + g];
+                grupos[g].forEach(x => {
+                    const st = getConsumoStatus(x.valor, meta, menorMelhor);
+                    const dif = (meta != null && !isNaN(meta)) ? (x.valor - meta) : null;
+                    const badge = st.ok === null
+                        ? '<span class="status-badge" style="background:#f1f5f9;color:#64748b;">' + st.txt + '</span>'
+                        : '<span class="status-badge ' + (st.ok ? 'consumo-badge-dentro' : 'consumo-badge-fora') + '">' + st.txt + '</span>';
+                    const difCls = st.ok === null ? '' : (st.ok ? 'consumo-dif-neg' : 'consumo-dif-pos');
+                    linhas += '<tr>' +
+                        '<td style="font-weight:700;">' + consumoEscHtml(g) + '</td>' +
+                        '<td style="font-weight:700;">' + consumoEscHtml(x.frota) + '</td>' +
+                        '<td>' + consumoEscHtml(x.descricao || '—') + '</td>' +
+                        '<td>' + consumoEscHtml(x.medicao || '—') + '</td>' +
+                        '<td style="font-weight:700;">' + consumoFmt(x.valor) + '</td>' +
+                        '<td>' + consumoFmt(x.litro) + '</td>' +
+                        '<td>' + consumoFmt(x.horaKm) + '</td>' +
+                        '<td>' + consumoFmt(meta) + '</td>' +
+                        '<td class="' + difCls + '">' + (dif == null ? '—' : (dif > 0 ? '+' : '') + consumoFmt(dif)) + '</td>' +
+                        '<td>' + badge + '</td>' +
+                        '</tr>';
+                });
+            });
+            return '<div class="card">' +
+                '<div class="section-title">📋 Detalhamento — Consumo TPL (' + consumoEscHtml(ctx.metrica) + ')</div>' +
+                '<div class="table-container"><table>' +
+                '<thead><tr><th>Grupo/Gestor</th><th>Frota</th><th>Equipamento</th><th>Medição</th><th>Consumo</th><th>Litros</th><th>Hora/KM</th><th>Meta</th><th>Diferença</th><th>Status</th></tr></thead>' +
+                '<tbody>' + linhas + '</tbody>' +
+                '</table></div></div>';
+        }
+
+        // ── Atualização de meta (re-render parcial, sem perder o foco) ──────
+        function updateConsumoMetaCaminhao(grupo, valor) { consumoAtualizarMeta('caminhao', grupo, valor); }
+        function updateConsumoMetaColhedoras(grupo, valor) { consumoAtualizarMeta('colhedoras', grupo, valor); }
+        function updateConsumoMetaTpl(grupo, valor) { consumoAtualizarMeta('tpl', grupo, valor); }
+
+        function consumoAtualizarMeta(tipo, grupo, valor) {
+            const ctx = consumoGetCtx(tipo);
+            const num = parseFloat(String(valor).replace(',', '.'));
+            ctx.metas[ctx.metrica + '|' + grupo] = isNaN(num) ? null : num;
+            consumoSalvarPrefs();
+
+            const { grupos, nomes } = consumoAgruparDados(ctx);
+            if (!grupos[grupo]) return;
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+
+            if (tipo === 'colhedoras') {
+                // Usa a meta global única (sincroniza para todas as frentes antes de re-renderizar)
+                const chaveGlobal = ctx.metrica + '|__global__';
+                ctx.metas[chaveGlobal] = isNaN(num) ? null : num;
+                nomes.forEach(g => ctx.metas[ctx.metrica + '|' + g] = ctx.metas[chaveGlobal]);
+                // gráfico único + resumo por frente
+                renderConsumoGraficoUnicoColhedoras(ctx, grupos, nomes);
+                renderConsumoFrenteLabels(grupos, nomes, menorMelhor, ctx.metas[chaveGlobal]);
+                renderConsumoMinisFrentes(ctx, grupos, nomes);
+                const elCards = document.getElementById('consumo-colhedoras-cards');
+                if (elCards) elCards.innerHTML = consumoHtmlCardsGerais(ctx, grupos, nomes, menorMelhor);
+                const elTab = document.getElementById('consumo-colhedoras-tabela');
+                if (elTab) elTab.innerHTML = consumoHtmlTabelaColhedoras(ctx, grupos, nomes, menorMelhor);
+                return;
+            }
+
+            // caminhão: re-renderiza só o bloco do grupo + cards/tabela (respeitando o chip ativo)
+            renderConsumoGrafico(ctx, grupo, grupos[grupo]);
+            renderConsumoMinis(ctx, grupo, grupos[grupo]);
+            const nomesVis = (tipo === 'tpl' && consumoFiltroGrupoTpl !== 'TODOS')
+                ? nomes.filter(g => g === consumoFiltroGrupoTpl)
+                : ((tipo === 'caminhao' && consumoFiltroGrupoCaminhao !== 'TODOS')
+                    ? nomes.filter(g => g === consumoFiltroGrupoCaminhao)
+                    : nomes);
+            const elCards = document.getElementById('consumo-' + tipo + '-cards');
+            if (elCards) elCards.innerHTML = consumoHtmlCardsGerais(ctx, grupos, nomesVis, menorMelhor);
+            const elTab = document.getElementById('consumo-' + tipo + '-tabela');
+            if (elTab) elTab.innerHTML = consumoHtmlTabela(ctx, grupos, nomesVis, menorMelhor);
+        }
+
+        function consumoTrocarMetrica(tipo, metrica) {
+            if (tipo === 'tpl') consumoMetricaTpl = metrica;
+            else if (tipo === 'caminhao') consumoMetricaCaminhao = metrica;
+            else consumoMetricaColhedoras = metrica;
+            consumoSalvarPrefs();
+            renderConsumoSubaba(tipo);
+        }
+
+        let consumoSafraAtivo = false;
+        function consumoToggleSafra() {
+            consumoSafraAtivo = !consumoSafraAtivo;
+            const btn = document.getElementById('consumo-btn-safra');
+            const info = document.getElementById('consumo-safra-info');
+            if (btn) btn.classList.toggle('active', consumoSafraAtivo);
+            if (info) info.style.display = consumoSafraAtivo ? 'block' : 'none';
+        }
+
+        // ── Exportação CSV ──────────────────────────────────────────────────
+        function exportConsumoCaminhaoCSV() { consumoExportCSV('caminhao', 'consumo_caminhao.csv'); }
+        function exportConsumoColhedorasCSV() { consumoExportCSV('colhedoras', 'consumo_colhedoras.csv'); }
+        function exportConsumoTplCSV() { consumoExportCSV('tpl', 'consumo_tpl.csv'); }
+
+        function consumoExportCSV(tipo, nomeArquivo) {
+            const ctx = consumoGetCtx(tipo);
+            if (!ctx.dados.length || !ctx.metrica) { if (typeof showToast === 'function') showToast('⚠️ Sem dados de consumo para exportar', '#dc2626'); return; }
+            const menorMelhor = consumoMenorMelhor(ctx.metrica);
+            const agr = consumoAgruparDados(ctx);
+            const grupos = agr.grupos;
+            const nomes = (tipo === 'tpl' && consumoFiltroGrupoTpl !== 'TODOS')
+                ? agr.nomes.filter(g => g === consumoFiltroGrupoTpl)
+                : ((tipo === 'caminhao' && consumoFiltroGrupoCaminhao !== 'TODOS')
+                    ? agr.nomes.filter(g => g === consumoFiltroGrupoCaminhao)
+                    : agr.nomes);
+            const sep = ';';
+            const num = n => (n == null || isNaN(n)) ? '' : String(Math.round(n * 10000) / 10000).replace('.', ',');
+            let csv = ['Frota', ctx.rotuloGrupo, 'Consumo (' + ctx.metrica + ')', 'Meta', 'Diferença p/ meta', 'Status'].join(sep) + '\r\n';
+            nomes.forEach(g => {
+                const meta = ctx.metas[ctx.metrica + '|' + g];
+                grupos[g].forEach(x => {
+                    const st = getConsumoStatus(x.valor, meta, menorMelhor);
+                    const dif = (meta != null && !isNaN(meta)) ? (x.valor - meta) : null;
+                    csv += [x.frota, '"' + g.replace(/"/g, '""') + '"', num(x.valor), num(meta), num(dif), st.txt].join(sep) + '\r\n';
+                });
+            });
+            const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = nomeArquivo;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+            if (typeof showToast === 'function') showToast('✅ ' + nomeArquivo + ' exportado!', '#16a34a');
+        }
+        // ═══════════════════════ FIM DO MÓDULO CONSUMO ══════════════════════

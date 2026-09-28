@@ -1,0 +1,1 @@
+// Core Firebase bindings module
