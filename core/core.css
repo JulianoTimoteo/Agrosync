@@ -3558,23 +3558,25 @@
     }
 }
 
-/* Custom label styles for Cargas Analisadas */
-/* Modo Online (Claro & Escuro): SIM verde (verde escuro no claro), NÃO vermelho (vermelho escuro no claro) */
-.lbl-sim {
-    color: var(--color-success-text, #15803d);
+/* SIM / NÃO no card de Total Cargas
+   Segue EXATAMENTE o mesmo padrão dos outros cards de status:
+   - online ok  : verde  = var(--color-success-text)
+   - online bad : vermelho = var(--color-danger-text)
+   - clone/PDF  : herda color:#fff do .clone-status-card (sem override necessário)
+*/
+.rp-status-grid .kpi-card.rp-status-ok .lbl-sim {
+    color: var(--color-success-text);
     font-weight: 700;
 }
-.lbl-nao {
-    color: var(--color-danger-text, #991b1b);
+.rp-status-grid .kpi-card.rp-status-ok .lbl-nao {
+    color: var(--color-danger-text);
     font-weight: 700;
 }
-
-/* APENAS na exportação para PDF (Clone PDF do relatório): texto 100% BRANCO */
-#rp-pdf-clone .lbl-sim,
-#rp-pdf-clone .lbl-nao,
-.clone-status-card .lbl-sim,
-.clone-status-card .lbl-nao,
-.exporting-pdf .lbl-sim,
-.exporting-pdf .lbl-nao {
-    color: #ffffff !important;
+.rp-status-grid .kpi-card.rp-status-bad .lbl-sim {
+    color: var(--color-success-text);
+    font-weight: 700;
+}
+.rp-status-grid .kpi-card.rp-status-bad .lbl-nao {
+    color: var(--color-danger-text);
+    font-weight: 700;
 }
