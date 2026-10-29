@@ -3580,3 +3580,117 @@
     color: var(--color-danger-text);
     font-weight: 700;
 }
+
+
+/* ── Micro-Cards Operacionais da Entrada Horária ── */
+.horaria-micro-card {
+    background: var(--color-bg-surface, #ffffff);
+    border: 1px solid var(--color-border, #e2e8f0);
+    border-radius: 10px;
+    padding: 10px 14px;
+    transition: all 0.2s ease;
+}
+.horaria-micro-card.card-media { border-left: 4px solid #0284c7; }
+.horaria-micro-card.card-pico  { border-left: 4px solid #f59e0b; }
+.horaria-micro-card.card-lider { border-left: 4px solid #6366f1; }
+.horaria-micro-card.card-mix   { border-left: 4px solid #10b981; }
+
+.horaria-micro-title {
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--color-text-muted, #64748b);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.horaria-micro-val {
+    font-size: 18px;
+    font-weight: 900;
+    color: var(--color-text-primary, #0f172a);
+}
+.horaria-micro-unit {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--color-text-muted, #64748b);
+}
+.horaria-micro-sub {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--color-text-muted, #64748b);
+    display: block;
+    margin-top: 2px;
+}
+
+/* Modo Escuro para Micro-Cards */
+[data-theme="dark"] .horaria-micro-card {
+    background: var(--color-bg-surface, #1e293b) !important;
+    border-color: var(--color-border, rgba(255, 255, 255, 0.12)) !important;
+}
+[data-theme="dark"] .horaria-micro-card.card-media { border-left-color: #38bdf8 !important; }
+[data-theme="dark"] .horaria-micro-card.card-pico  { border-left-color: #fbbf24 !important; }
+[data-theme="dark"] .horaria-micro-card.card-lider { border-left-color: #818cf8 !important; }
+[data-theme="dark"] .horaria-micro-card.card-mix   { border-left-color: #34d399 !important; }
+
+[data-theme="dark"] .horaria-micro-title,
+[data-theme="dark"] .horaria-micro-unit,
+[data-theme="dark"] .horaria-micro-sub {
+    color: var(--color-text-muted, #94a3b8) !important;
+}
+[data-theme="dark"] .horaria-micro-val {
+    color: #ffffff !important;
+}
+[data-theme="dark"] #horaria-kpi-mediabadge { color: #38bdf8 !important; }
+[data-theme="dark"] #horaria-kpi-picohora   { color: #fbbf24 !important; }
+[data-theme="dark"] #horaria-kpi-liderpct   { color: #a5b4fc !important; }
+[data-theme="dark"] #horaria-kpi-mixsplit   { color: #34d399 !important; }
+
+/* Botões de Filtro Própria / Terceira */
+.btn-frente-filter {
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-weight: 800;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.btn-frente-filter.btn-prop {
+    border: 2px solid #40800c;
+    background: #ffffff;
+    color: #40800c;
+}
+.btn-frente-filter.btn-terc {
+    border: 2px solid #e9a23b;
+    background: #ffffff;
+    color: #e9a23b;
+}
+
+[data-theme="dark"] .btn-frente-filter.btn-prop {
+    border-color: #22c55e !important;
+    background: rgba(34, 197, 94, 0.15) !important;
+    color: #4ade80 !important;
+}
+[data-theme="dark"] .btn-frente-filter.btn-terc {
+    border-color: #f59e0b !important;
+    background: rgba(245, 158, 11, 0.15) !important;
+    color: #fbbf24 !important;
+}
+
+/* Ajustes no Acumulado e Meta no Dark Mode */
+[data-theme="dark"] .meta-info {
+    color: var(--color-text-secondary, #cbd5e1) !important;
+    opacity: 1 !important;
+}
+[data-theme="dark"] #val-campo-total,
+[data-theme="dark"] #val-transp-total {
+    color: #4ade80 !important;
+}
+[data-theme="dark"] #val-campo-media3h,
+[data-theme="dark"] #val-transp-media3h {
+    color: var(--color-text-muted, #94a3b8) !important;
+}
+[data-theme="dark"] #input-meta-moagem-colheita,
+[data-theme="dark"] #input-meta-moagem-transp {
+    background: var(--color-bg-input, #0f172a) !important;
+    color: #ffffff !important;
+    border-color: #6366f1 !important;
+}

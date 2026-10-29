@@ -85,11 +85,36 @@ Chart.register(ChartDataLabels);
         }
 
         document.addEventListener('DOMContentLoaded', atualizarBotaoTema);
+        let rpStatusSelectedHora = null;
         let coaData = []; // [{dia, cargaId, analisado: bool, frente}]
 
         // Classificação global de frentes: Próprias (F08,10,11,12,13,14,15) x Terceiras (F23,30,33,34,35,38,39)
         const FRENTES_PROPRIA = new Set(['08', '8', '10', '11', '12', '13', '14', '15'].map(n => 'Frente ' + n.padStart(2, '0')));
-        const FRENTES_TERCEIRA = new Set(['23', '30', '33', '34', '35', '38', '39'].map(n => 'Frente ' + n.padStart(2, '0')));
+        const FRENTES_TERCEIRA = new Set(['01', '1', '23', '30', '33', '34', '35', '38', '39', '41'].map(n => 'Frente ' + n.padStart(2, '0')));
+
+        function isFrentePropria(frenteNome) {
+            if (!frenteNome) return false;
+            const fNorm = frenteNome.startsWith('Frente ') ? frenteNome : 'Frente ' + String(frenteNome).replace(/\D/g, '').padStart(2, '0');
+            if (FRENTES_PROPRIA.has(fNorm)) return true;
+            if (FRENTES_TERCEIRA.has(fNorm)) return false;
+            const achadoH = horariaRaw.find(d => d.frente === fNorm);
+            if (achadoH) return achadoH.ownership === 'proprio';
+            const achadoD = densidadeRaw.find(d => d.frente === fNorm);
+            if (achadoD) return !achadoD.camTerc;
+            return false;
+        }
+
+        function isFrenteTerceira(frenteNome) {
+            if (!frenteNome) return false;
+            const fNorm = frenteNome.startsWith('Frente ') ? frenteNome : 'Frente ' + String(frenteNome).replace(/\D/g, '').padStart(2, '0');
+            if (FRENTES_TERCEIRA.has(fNorm)) return true;
+            if (FRENTES_PROPRIA.has(fNorm)) return false;
+            const achadoH = horariaRaw.find(d => d.frente === fNorm);
+            if (achadoH) return achadoH.ownership === 'terceiro';
+            const achadoD = densidadeRaw.find(d => d.frente === fNorm);
+            if (achadoD) return !!achadoD.camTerc;
+            return false;
+        }
         let coaShowingRace = false; // controla qual gráfico está visível na coluna direita do COA
         let horariaRaw = []; // [{dia, hora, frente, peso}]
         let frenteFilter = { propria: false, terceira: false }; // false = não selecionado
@@ -2322,7 +2347,7 @@ Chart.register(ChartDataLabels);
                 ? horariaRaw
                 : horariaRaw.filter(d => d.dia === selectedDay);
 
-            if (!dados.length) {
+            if (!dados || !dados.length) {
                 if (wrap) wrap.style.display = 'none';
                 if (noData) noData.style.display = 'block';
                 if (charts['horaria']) { charts['horaria'].destroy(); delete charts['horaria']; }
@@ -2335,48 +2360,174 @@ Chart.register(ChartDataLabels);
             const HORAS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5];
             const LABELS = HORAS.map(h => String(h).padStart(2, '0') + ':00');
 
-            // Conjuntos de frentes por tipo (globais — ver FRENTES_PROPRIA / FRENTES_TERCEIRA no topo do script)
-
             // Decide quais frentes mostrar com base no filtro
             const showProp = frenteFilter.propria;
             const showTerc = frenteFilter.terceira;
             const mostrarTudo = (!showProp && !showTerc) || (showProp && showTerc);
 
-            // Frentes ordenadas + filtradas
+            // Frentes ordenadas + filtradas (suporta frentes novas dinamicamente)
             const frentes = [...new Set(dados.map(d => d.frente))].sort((a, b) => {
                 const na = parseInt(a.replace('Frente', '')) || 0;
                 const nb = parseInt(b.replace('Frente', '')) || 0;
                 return na - nb;
             }).filter(f => {
                 if (mostrarTudo) return true;
-                if (showProp && FRENTES_PROPRIA.has(f)) return true;
-                if (showTerc && FRENTES_TERCEIRA.has(f)) return true;
+                if (showProp && isFrentePropria(f)) return true;
+                if (showTerc && isFrenteTerceira(f)) return true;
                 return false;
             });
 
-            // Paleta de cores harmoniosa com a página
+            // Paleta de cores harmoniosa, com bom contraste para leitura dos rótulos internos
             const PALETTE = [
-                '#40800c', '#3b82f6', '#f59e0b', '#8b5cf6', '#06b6d4',
-                '#ec4899', '#84cc16', '#f97316', '#14b8a6', '#e11d48',
-                '#0891b2', '#a855f7', '#65a30d', '#dc2626', '#0369a1'
+                '#10b981', '#06b6d4', '#6366f1', '#f59e0b', '#ec4899',
+                '#8b5cf6', '#14b8a6', '#f97316', '#84cc16', '#3b82f6',
+                '#059669', '#d97706', '#4f46e5', '#db2777', '#0284c7',
+                '#e11d48', '#ca8a04', '#2563eb', '#9333ea', '#0d9488'
             ];
 
-            // Agrega: mesmo hora/frente de vários dias somados
-            const agg = new Map(); // 'hora|frente' → peso
+            // Agrega: 'hora|frente' → peso e acumula totais por frente e por tipo
+            const agg = new Map();
+            const frontTotals = {};
+            let totProprio = 0;
+            let totTerceiro = 0;
+
             dados.forEach(d => {
                 const k = `${d.hora}|${d.frente}`;
                 agg.set(k, (agg.get(k) || 0) + d.peso);
+                frontTotals[d.frente] = (frontTotals[d.frente] || 0) + d.peso;
+                if (d.ownership === 'proprio' || isFrentePropria(d.frente)) {
+                    totProprio += d.peso;
+                } else {
+                    totTerceiro += d.peso;
+                }
             });
 
-            // Total por hora (para referência nos tooltips)
+            // Total por hora (para referência nos tooltips, plugin do topo, média e pico)
             const totalPorHora = new Array(24).fill(0);
+            let totalGeralPeriodo = 0;
             HORAS.forEach((h, i) => {
                 frentes.forEach(f => {
-                    totalPorHora[i] += agg.get(`${h}|${f}`) || 0;
+                    const v = agg.get(`${h}|${f}`) || 0;
+                    totalPorHora[i] += v;
+                    totalGeralPeriodo += v;
                 });
             });
 
-            // Datasets — uma série por frente
+            // ── Atualização dos 4 Micro-Cards Operacionais ──
+            try {
+                // 1) MÉDIA DA MOAGEM HORA: sempre das 3 últimas horas fechadas
+                //    REGRA OPERACIONAL ESTRITA:
+                //    Uma hora 'i' só é considerada FECHADA quando a hora seguinte (i + 1) já tiver valor lançado!
+                //    A última hora com lançamento ainda está em andamento (aberta).
+                //    Portanto, só usa 10:00 quando tiver valor às 11:00 (enquanto 11:00 não tiver valor, usa 07, 08, 09)!
+                const closedSlots = [];
+                for (let i = 0; i < 23; i++) {
+                    if (totalPorHora[i] > 0 && totalPorHora[i + 1] > 0) {
+                        closedSlots.push(i);
+                    }
+                }
+                // Se o ciclo todo de 24h fechou (ex: dia passado com dados completos até as 05:00):
+                if (totalPorHora[23] > 0 && totalPorHora[22] > 0) {
+                    closedSlots.push(23);
+                }
+
+                const elMediaTitle = document.getElementById('horaria-kpi-mediatitle');
+                const elMediaBadge = document.getElementById('horaria-kpi-mediabadge');
+                const elMediaVal = document.getElementById('horaria-kpi-mediaval');
+                const elMediaSub = document.getElementById('horaria-kpi-mediasub');
+
+                if (closedSlots.length > 0) {
+                    // Pega as últimas 3 fechadas (ou 2 se só tiver 2, ou 1 se só tiver 1)
+                    const slotsCalc = closedSlots.length >= 3 
+                        ? closedSlots.slice(-3) 
+                        : closedSlots;
+
+                    const qtdH = slotsCalc.length;
+                    let somaRecente = 0;
+                    slotsCalc.forEach(s => { somaRecente += totalPorHora[s]; });
+                    const mediaRecente = qtdH > 0 ? somaRecente / qtdH : 0;
+                    const nomesH = slotsCalc.map(s => LABELS[s]).join(', ');
+
+                    if (elMediaTitle) elMediaTitle.innerText = `⏱️ Média (${qtdH}h Fechadas)`;
+                    if (elMediaBadge) elMediaBadge.innerText = `${qtdH}h fechada(s)`;
+                    if (elMediaVal) elMediaVal.innerText = mediaRecente.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+                    if (elMediaSub) elMediaSub.innerText = `Últimas ${qtdH}h: ${nomesH}`;
+                } else {
+                    // Nenhuma hora fechou ainda (ex: início do turno com apenas a 1ª hora rodando)
+                    const primeiroSlot = totalPorHora.findIndex(v => v > 0);
+                    if (elMediaTitle) elMediaTitle.innerText = `⏱️ Média Recente`;
+                    if (elMediaBadge) elMediaBadge.innerText = `Em andamento`;
+                    if (elMediaVal) {
+                        elMediaVal.innerText = primeiroSlot >= 0 
+                            ? totalPorHora[primeiroSlot].toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                            : `0`;
+                    }
+                    if (elMediaSub) {
+                        elMediaSub.innerText = primeiroSlot >= 0 
+                            ? `Aguardando ${LABELS[primeiroSlot + 1]} para fechar ${LABELS[primeiroSlot]}`
+                            : `Aguardando 1ª hora fechada`;
+                    }
+                }
+
+                // 2) PICO HORÁRIO
+                let picoVal = 0;
+                let picoIdx = 0;
+                totalPorHora.forEach((v, idx) => {
+                    if (v > picoVal) { picoVal = v; picoIdx = idx; }
+                });
+                const elPico = document.getElementById('horaria-kpi-pico');
+                const elPicoHora = document.getElementById('horaria-kpi-picohora');
+                const elPicoSub = document.getElementById('horaria-kpi-picosub');
+                if (elPico) elPico.innerText = picoVal > 0 ? picoVal.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '0';
+                if (elPicoHora) elPicoHora.innerText = picoVal > 0 ? `Às ${LABELS[picoIdx]}` : '—';
+                if (elPicoSub && picoVal > 0) {
+                    const horaPicoNum = HORAS[picoIdx];
+                    let bestF = '', bestV = 0;
+                    frentes.forEach(f => {
+                        const v = agg.get(`${horaPicoNum}|${f}`) || 0;
+                        if (v > bestV) { bestV = v; bestF = f; }
+                    });
+                    if (bestF) {
+                        const pctPico = ((bestV / picoVal) * 100).toFixed(0);
+                        elPicoSub.innerText = `${bestF} puxou ${pctPico}% (${bestV.toFixed(0)} t)`;
+                    }
+                }
+
+                // 3) FRENTE LÍDER
+                let liderF = '', liderVal = 0;
+                frentes.forEach(f => {
+                    const v = frontTotals[f] || 0;
+                    if (v > liderVal) { liderVal = v; liderF = f; }
+                });
+                const elLider = document.getElementById('horaria-kpi-lider');
+                const elLiderPct = document.getElementById('horaria-kpi-liderpct');
+                const elLiderSub = document.getElementById('horaria-kpi-lidersub');
+                if (elLider) elLider.innerText = liderF || '—';
+                if (elLiderPct) {
+                    const pctGeral = totalGeralPeriodo > 0 ? ((liderVal / totalGeralPeriodo) * 100).toFixed(1) : '0';
+                    elLiderPct.innerText = liderF ? `${pctGeral}% do total` : '—';
+                }
+                if (elLiderSub && liderVal > 0) {
+                    elLiderSub.innerText = `${liderVal.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} t acumuladas`;
+                }
+
+                // 4) MIX PRÓPRIA VS TERCEIRO
+                const elMixVal = document.getElementById('horaria-kpi-mixval');
+                const elMixSplit = document.getElementById('horaria-kpi-mixsplit');
+                const elMixSub = document.getElementById('horaria-kpi-mixsub');
+                const totMix = totProprio + totTerceiro;
+                if (elMixVal && totMix > 0) {
+                    const pctP = ((totProprio / totMix) * 100).toFixed(0);
+                    const pctT = ((totTerceiro / totMix) * 100).toFixed(0);
+                    elMixVal.innerText = `${pctP}% Prop. / ${pctT}% Terc.`;
+                    if (elMixSplit) elMixSplit.innerText = `${totProprio.toFixed(0)}t / ${totTerceiro.toFixed(0)}t`;
+                    if (elMixSub) elMixSub.innerText = `Própria: ${totProprio.toLocaleString('pt-BR', {maximumFractionDigits:0})} t • Terceira: ${totTerceiro.toLocaleString('pt-BR', {maximumFractionDigits:0})} t`;
+                }
+            } catch (errCards) {
+                console.warn('[Horaria KPI Cards] Erro:', errCards);
+            }
+
+            // Datasets — uma série por frente com cantos levemente arredondados
             const datasets = frentes.map((frente, idx) => {
                 const cor = PALETTE[idx % PALETTE.length];
                 return {
@@ -2386,16 +2537,17 @@ Chart.register(ChartDataLabels);
                         return v > 0 ? parseFloat(v.toFixed(3)) : 0;
                     }),
                     backgroundColor: cor,
-                    hoverBackgroundColor: cor + 'cc',
-                    borderRadius: { topLeft: 2, topRight: 2 },
+                    hoverBackgroundColor: cor + 'ee',
+                    borderRadius: { topLeft: 4, topRight: 4 },
                     borderSkipped: false,
-                    borderWidth: 0
+                    borderWidth: 0,
+                    maxBarThickness: 42
                 };
             });
 
             if (charts['horaria']) { charts['horaria'].destroy(); delete charts['horaria']; }
 
-            // Plugin inline: desenha o total em destaque acima de cada barra
+            // Plugin inline: desenha o total em destaque acima de cada barra (100% preservado)
             const totaisPlugin = {
                 id: 'stackTotals',
                 afterDatasetsDraw(chart) {
@@ -2403,7 +2555,7 @@ Chart.register(ChartDataLabels);
                     const escuro = document.documentElement.getAttribute('data-theme') === 'dark';
                     ctx.save();
                     ctx.font = '800 11px "Plus Jakarta Sans", "Segoe UI", sans-serif';
-                    ctx.fillStyle = escuro ? '#5cb82f' : '#40800c';
+                    ctx.fillStyle = escuro ? '#34d399' : '#059669';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'bottom';
                     HORAS.forEach((_, i) => {
@@ -2411,12 +2563,11 @@ Chart.register(ChartDataLabels);
                         if (!(tot > 0)) return;
                         const xPx = x.getPixelForValue(i);
                         const yPx = y.getPixelForValue(tot);
-                        // contorno sólido (não borrado) para legibilidade sobre as barras coloridas
-                        ctx.lineWidth = 3;
-                        ctx.strokeStyle = escuro ? 'rgba(11,15,20,0.9)' : 'rgba(255,255,255,0.9)';
+                        ctx.lineWidth = 3.5;
+                        ctx.strokeStyle = escuro ? 'rgba(11,15,20,0.92)' : 'rgba(255,255,255,0.95)';
                         ctx.lineJoin = 'round';
                         ctx.shadowBlur = 0;
-                        const texto = tot.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ' t';
+                        const texto = Math.round(tot).toLocaleString('pt-BR') + ' t';
                         ctx.strokeText(texto, xPx, yPx - 5);
                         ctx.fillText(texto, xPx, yPx - 5);
                     });
@@ -2431,7 +2582,11 @@ Chart.register(ChartDataLabels);
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    layout: { padding: { top: 50 } }, // espaço ajustado para não cortar rótulos/título
+                    animation: {
+                        duration: 750,
+                        easing: 'easeOutQuart'
+                    },
+                    layout: { padding: { top: 45, bottom: 6 } },
                     interaction: { mode: 'index', intersect: false },
                     scales: {
                         x: {
@@ -2462,41 +2617,49 @@ Chart.register(ChartDataLabels);
                             labels: {
                                 font: { size: 11, weight: '700', family: 'Plus Jakarta Sans' },
                                 color: corDeTextoParaGrafico(),
-                                padding: 18,
+                                padding: 16,
                                 usePointStyle: true,
-                                pointStyle: 'rectRounded',
-                                pointStyleWidth: 14
+                                pointStyle: 'circle',
+                                pointStyleWidth: 10
                             }
                         },
                         tooltip: {
-                            backgroundColor: '#1e293b',
+                            backgroundColor: 'rgba(15, 23, 42, 0.94)',
                             titleFont: { size: 12, weight: '800' },
-                            bodyFont: { size: 11 },
+                            bodyFont: { size: 11, weight: '600' },
                             padding: 12,
+                            cornerRadius: 10,
+                            borderColor: 'rgba(255, 255, 255, 0.1)',
+                            borderWidth: 1,
                             callbacks: {
                                 title: items => `🕐 ${items[0].label}`,
                                 afterBody: items => {
                                     const idx2 = items[0].dataIndex;
                                     const tot = totalPorHora[idx2];
                                     return tot > 0
-                                        ? [`─────────────────`, `📦 Total: ${tot.toFixed(3)} t`]
+                                        ? [`──────────────────────────`, `📦 Total da Hora: ${tot.toLocaleString('pt-BR', {minimumFractionDigits: 1, maximumFractionDigits: 1})} t`]
                                         : [];
                                 },
                                 label: ctx => {
                                     const v = ctx.parsed.y;
-                                    return v > 0 ? ` ${ctx.dataset.label}: ${v.toFixed(3)} t` : null;
+                                    if (!(v > 0)) return null;
+                                    const horaIdx = ctx.dataIndex;
+                                    const totH = totalPorHora[horaIdx] || 1;
+                                    const pct = ((v / totH) * 100).toFixed(1);
+                                    return ` ${ctx.dataset.label}: ${v.toLocaleString('pt-BR', {minimumFractionDigits: 1, maximumFractionDigits: 1})} t (${pct}%)`;
                                 }
                             }
                         },
+                        // RÓTULOS INTERNOS DE CADA FRENTE: 100% ATIVOS E LEGÍVEIS COM CONTRASTE
                         datalabels: {
                             display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
-                            formatter: v => v.toFixed(0),
+                            formatter: v => v >= 15 ? Math.round(v) : '',
                             color: '#ffffff',
-                            font: { size: 8, weight: '800', family: 'Plus Jakarta Sans' },
+                            font: { size: 9, weight: '800', family: 'Plus Jakarta Sans' },
                             anchor: 'center',
                             align: 'center',
                             clamp: true,
-                            textShadowColor: 'rgba(0,0,0,0.4)',
+                            textShadowColor: 'rgba(0,0,0,0.6)',
                             textShadowBlur: 3
                         }
                     }
@@ -2934,6 +3097,30 @@ Chart.register(ChartDataLabels);
         //  ROTAÇÃO DA MOENDA. Só as horas realmente preenchidas entram —
         //  o restante do dia ainda não aconteceu / não foi lançado.
         // ═══════════════════════════════════════════════════════════════
+                function parseHoraPotencial(val) {
+            if (val === null || val === undefined || val === '') return NaN;
+            if (typeof val === 'number') {
+                if (val >= 0 && val < 1) {
+                    const minutos = Math.round(val * 24 * 60);
+                    return Math.floor(minutos / 60) % 24;
+                }
+                const h = Math.floor(val);
+                return h === 24 ? 0 : h;
+            }
+            const s = String(val).trim();
+            const m = s.match(/^(\d{1,2}):(\d{2})/);
+            if (m) {
+                const h = parseInt(m[1], 10);
+                return h === 24 ? 0 : h;
+            }
+            const n = Number(s.replace(',', '.'));
+            if (!isNaN(n) && n >= 0 && n <= 24) {
+                const h = Math.floor(n);
+                return h === 24 ? 0 : h;
+            }
+            return NaN;
+        }
+
         function processPotencialData(rows) {
             try {
                 potencialData = {};
@@ -2961,13 +3148,23 @@ Chart.register(ChartDataLabels);
                 for (let i = 1; i < rows.length; i++) {
                     const r = rows[i];
                     if (!r || r.every(c => c === '' || c === null)) continue;
-                    const hora = parseInt(String(r[idx.horaFixa]).trim());
+                    let hora = parseHoraPotencial(r[idx.horaFixa]);
+                    if (isNaN(hora) && headers.findIndex(h => h === 'HORA') >= 0) {
+                        hora = parseHoraPotencial(r[headers.findIndex(h => h === 'HORA')]);
+                    }
                     if (isNaN(hora)) continue;
-                    // Gatilho de "hora preenchida" = coluna Caminhões Ida, porque colunas
-                    // calculadas (Disp./Potencial/RPM) podem já vir prontas para a hora
-                    // seguinte antes do lançamento manual dos status de caminhões.
-                    const idaRaw = idx.ida >= 0 ? r[idx.ida] : '';
-                    if (idaRaw === '' || idaRaw === null || idaRaw === undefined) continue; // hora ainda não preenchida
+                    
+                    const temDado = (idx.ida >= 0 && r[idx.ida] !== '' && r[idx.ida] !== null && r[idx.ida] !== undefined)
+                        || (idx.campo >= 0 && r[idx.campo] !== '' && r[idx.campo] !== null && r[idx.campo] !== undefined)
+                        || (idx.descarga >= 0 && r[idx.descarga] !== '' && r[idx.descarga] !== null && r[idx.descarga] !== undefined)
+                        || (idx.parado >= 0 && r[idx.parado] !== '' && r[idx.parado] !== null && r[idx.parado] !== undefined)
+                        || (idx.volta >= 0 && r[idx.volta] !== '' && r[idx.volta] !== null && r[idx.volta] !== undefined)
+                        || (idx.carretas >= 0 && r[idx.carretas] !== '' && r[idx.carretas] !== null && r[idx.carretas] !== undefined)
+                        || (idx.potencial >= 0 && r[idx.potencial] !== '' && r[idx.potencial] !== null && r[idx.potencial] !== undefined)
+                        || (idx.dispColh >= 0 && r[idx.dispColh] !== '' && r[idx.dispColh] !== null && r[idx.dispColh] !== undefined)
+                        || (idx.rpm >= 0 && r[idx.rpm] !== '' && r[idx.rpm] !== null && r[idx.rpm] !== undefined);
+                    if (!temDado) continue;
+
                     potencialData[hora] = {
                         dispColh: val(r, idx.dispColh), dispTransb: val(r, idx.dispTransb), dispCam: val(r, idx.dispCam),
                         potencial: val(r, idx.potencial),
@@ -3058,10 +3255,36 @@ Chart.register(ChartDataLabels);
             return selectedDay === 'TODOS' ? coaData : coaData.filter(d => d.dia === selectedDay);
         }
 
-        // Última hora do ciclo (06→23,00→05) com dado preenchido no Potencial.xlsx
+        function rpMudarHoraStatus(val) {
+            if (val === 'latest' || val === '' || isNaN(parseInt(val, 10))) {
+                rpStatusSelectedHora = null;
+            } else {
+                rpStatusSelectedHora = parseInt(val, 10);
+            }
+            renderRelProducao();
+        }
+
+        // Regra Horária do Relógio em Tempo Real:
+        // Segue estritamente a hora atual do relógio (ex: se agora são 07:xx lê a hora 7, se 08:xx lê a hora 8)
         function rpUltimaHoraPotencial() {
-            const chaves = Object.keys(potencialData).map(Number);
+            if (!potencialData || typeof potencialData !== 'object') return null;
+            if (typeof sanitizarPotencialData === 'function') sanitizarPotencialData();
+            const chaves = Object.keys(potencialData).map(Number).filter(h => !isNaN(h));
             if (!chaves.length) return null;
+
+            const horaAtual = new Date().getHours();
+            if (potencialData[horaAtual] !== undefined) {
+                return horaAtual;
+            }
+
+            const idxAtual = HORAS_CICLO.indexOf(horaAtual);
+            if (idxAtual !== -1) {
+                for (let i = idxAtual; i >= 0; i--) {
+                    const h = HORAS_CICLO[i];
+                    if (potencialData[h] !== undefined) return h;
+                }
+            }
+
             let melhor = null, melhorIdx = -1;
             chaves.forEach(h => {
                 const idx = HORAS_CICLO.indexOf(h);
@@ -3230,6 +3453,11 @@ Chart.register(ChartDataLabels);
         };
         function rpStatusRuleInfo(key, v) {
             if (v === null || v === undefined || isNaN(v)) return { ok: true, tooltip: 'Sem dado' };
+            if (key === 'potencial') {
+                const metaH = (typeof metaMoagemDiaria === 'number' && metaMoagemDiaria > 0) ? metaMoagemDiaria / 24 : 800;
+                const ok = v >= metaH * 0.9;
+                return { ok, tooltip: `Potencial Real na Hora: ${rpFmtNum(v, 0)} t/h (Referência Meta/h: ${rpFmtNum(metaH, 0)} t/h)` };
+            }
             if (key === 'parados') {
                 const ok = v <= 6;
                 return { ok, tooltip: `Parados: ${rpFmtNum(v, 0)} · ideal ≤ 5 (tolerância até 6) · acima de 6 = crítico` };
@@ -3274,10 +3502,28 @@ Chart.register(ChartDataLabels);
             document.getElementById('rp-val-projecao').innerText = fmtT(proj.projecao);
             document.getElementById('rp-val-meta').innerText = fmtT(typeof metaMoagemDiaria === 'number' ? metaMoagemDiaria : 0);
 
-            // ── Status de caminhões (último snapshot do Potencial.xlsx) ────
+            // ── Status de caminhões (Potencial.xlsx com seletor de hora e Regra Horária) ────
             const statusGrid = document.getElementById('rp-status-grid');
             const statusHora = document.getElementById('rp-status-hora');
-            const h = rpUltimaHoraPotencial();
+            const selectHora = document.getElementById('rp-status-hora-select');
+            const ctrlHora = document.getElementById('rp-status-hora-ctrl');
+
+            const ultHora = rpUltimaHoraPotencial();
+            const chavesDisp = Object.keys(potencialData).map(Number).filter(ch => !isNaN(ch))
+                .sort((a, b) => HORAS_CICLO.indexOf(a) - HORAS_CICLO.indexOf(b));
+
+            if (selectHora && chavesDisp.length > 0) {
+                const horaAtiva = (rpStatusSelectedHora !== null && potencialData[rpStatusSelectedHora]) ? rpStatusSelectedHora : ultHora;
+                selectHora.innerHTML = chavesDisp.map(ch => {
+                    const rotulo = String(ch).padStart(2, '0') + ':00' + (ch === ultHora ? ' (Atual)' : '');
+                    return `<option value="${ch}" ${(horaAtiva === ch) ? 'selected' : ''}>${rotulo}</option>`;
+                }).join('');
+                if (ctrlHora) ctrlHora.style.display = 'flex';
+            } else if (ctrlHora) {
+                ctrlHora.style.display = 'none';
+            }
+
+            const h = (rpStatusSelectedHora !== null && potencialData[rpStatusSelectedHora]) ? rpStatusSelectedHora : ultHora;
             if (h !== null) {
                 const p = potencialData[h];
                 statusHora.innerText = '· hora ' + String(h).padStart(2, '0') + ':00';
@@ -3286,6 +3532,7 @@ Chart.register(ChartDataLabels);
                 const totalCoa = coaDados.length;
                 const pctAnalisado = totalCoa > 0 ? (analisado / totalCoa) * 100 : 0;
                 const itens = [
+                    ['⚡ POTENCIAL', p.potencial, 'potencial'],
                     ['🚚 IDA', p.ida, 'ida'], ['🌾 CAMPO', p.campo, 'campo'], ['↩️ VOLTA', p.volta, 'volta'],
                     ['⏳ FILA EXT.', p.filaExt, 'filaExt'], ['📤 DESCARGA', p.descarga, 'descarga'], ['🛑 PARADOS', p.parado, 'parados'],
                     ['🚛 CARRETAS CARREGADAS', p.carretas, 'carretas'], ['⚙️ RPM MOENDA', p.rpm, 'rpm']
@@ -5236,6 +5483,7 @@ Chart.register(ChartDataLabels);
             const totalCoa = coaDados.length;
             const pctAnalisado = totalCoa > 0 ? (analisadoCount / totalCoa) * 100 : 0;
             const statusDefs = p ? [
+                ['⚡', 'POTENCIAL', p.potencial, 'potencial'],
                 ['📤', 'DESCARGA', p.descarga, 'descarga'],
                 ['🌾', 'CAMPO', p.campo, 'campo'],
                 ['↩️', 'VOLTA', p.volta, 'volta'],

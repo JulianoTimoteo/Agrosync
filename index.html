@@ -376,9 +376,67 @@
                     </div>
 
                     <!-- Gráfico entrada de cana por hora / frente -->
-                    <div class="balance-card" style="margin-top:20px;">
-                        <div class="balance-card-title" style="border-left-color:#6366f1;">
-                            📊 Entrada de Cana por Hora — Por Frente (06:00 → 05:59)
+                    <div class="balance-card" style="margin-top:20px; border-radius:14px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                            <div class="balance-card-title" style="border-left-color:#10b981; margin-bottom:0;">
+                                📊 Entrada de Cana por Hora — Por Frente (06:00 → 05:59)
+                            </div>
+                            <span style="font-size:11px; font-weight:800; padding:3px 10px; border-radius:12px; background:rgba(16,185,129,0.1); color:#059669; border:1px solid rgba(16,185,129,0.2);">
+                                Ciclo 24h
+                            </span>
+                        </div>
+
+                        <!-- 4 Micro-Cards Operacionais da Entrada Horária -->
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-top:14px;">
+                            <!-- Média Recente (Últimas 3 Horas Fechadas) -->
+                            <div class="horaria-micro-card card-media">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span id="horaria-kpi-mediatitle" class="horaria-micro-title">⏱️ Média Recente</span>
+                                    <span id="horaria-kpi-mediabadge" style="font-size:11px; font-weight:800; color:#0284c7;">—</span>
+                                </div>
+                                <div style="display:flex; align-items:baseline; gap:4px; margin-top:3px;">
+                                    <span id="horaria-kpi-mediaval" class="horaria-micro-val">0</span>
+                                    <span class="horaria-micro-unit">t/h</span>
+                                </div>
+                                <span id="horaria-kpi-mediasub" class="horaria-micro-sub">Últimas horas fechadas</span>
+                            </div>
+
+                            <!-- Pico da Moagem -->
+                            <div class="horaria-micro-card card-pico">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span class="horaria-micro-title">⚡ Pico Horário</span>
+                                    <span id="horaria-kpi-picohora" style="font-size:11px; font-weight:800; color:#d97706;">—</span>
+                                </div>
+                                <div style="display:flex; align-items:baseline; gap:4px; margin-top:3px;">
+                                    <span id="horaria-kpi-pico" class="horaria-micro-val">0</span>
+                                    <span class="horaria-micro-unit">t</span>
+                                </div>
+                                <span id="horaria-kpi-picosub" class="horaria-micro-sub">Maior descarga em 1 hora</span>
+                            </div>
+
+                            <!-- Frente Líder -->
+                            <div class="horaria-micro-card card-lider">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span class="horaria-micro-title">🚜 Frente Líder</span>
+                                    <span id="horaria-kpi-liderpct" style="font-size:11px; font-weight:800; color:#4f46e5;">—</span>
+                                </div>
+                                <div style="display:flex; align-items:baseline; gap:4px; margin-top:3px;">
+                                    <span id="horaria-kpi-lider" class="horaria-micro-val">—</span>
+                                </div>
+                                <span id="horaria-kpi-lidersub" class="horaria-micro-sub">Maior volume entregue</span>
+                            </div>
+
+                            <!-- Mix Própria vs Fornecedor -->
+                            <div class="horaria-micro-card card-mix">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span class="horaria-micro-title">⚖️ Mix de Entrada</span>
+                                    <span id="horaria-kpi-mixsplit" style="font-size:11px; font-weight:800; color:#059669;">—</span>
+                                </div>
+                                <div style="display:flex; align-items:baseline; gap:4px; margin-top:3px;">
+                                    <span id="horaria-kpi-mixval" class="horaria-micro-val" style="font-size:16px;">—</span>
+                                </div>
+                                <span id="horaria-kpi-mixsub" class="horaria-micro-sub">Própria (31) × Terceira (91)</span>
+                            </div>
                         </div>
                         <!-- Filtros Própria / Terceira -->
                         <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center;">
@@ -933,7 +991,14 @@
 
                     <!-- Status de caminhões / RPM (último snapshot do Potencial.xlsx) + Análise COA -->
                     <div class="balance-card" id="rp-status-wrap">
-                        <div class="balance-card-title">🚛 Status de Caminhões · Potencial.xlsx <span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;"></span></div>
+                        <div class="balance-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                            <div>🚛 Status de Caminhões<span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;margin-left:6px;"></span></div>
+                            <div id="rp-status-hora-ctrl" style="display:none;align-items:center;gap:6px;font-size:11px;font-weight:600;">
+                                <label for="rp-status-hora-select" style="color:var(--color-text-muted, #64748b);">Hora:</label>
+                                <select id="rp-status-hora-select" onchange="rpMudarHoraStatus(this.value)" style="padding:2px 8px;border-radius:6px;border:1px solid var(--color-border, #cbd5e1);background:var(--color-bg-surface, #fff);font-size:12px;font-weight:700;color:inherit;cursor:pointer;">
+                                </select>
+                            </div>
+                        </div>
                         <div class="rp-status-grid" id="rp-status-grid" style="margin-top:10px;"></div>
                     </div>
 

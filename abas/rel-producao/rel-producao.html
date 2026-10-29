@@ -58,7 +58,14 @@
 
                     <!-- Status de caminhões / RPM (último snapshot do Potencial.xlsx) + Análise COA -->
                     <div class="balance-card" id="rp-status-wrap">
-                        <div class="balance-card-title">🚛 Status de Caminhões · Potencial.xlsx <span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;"></span></div>
+                        <div class="balance-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                            <div>🚛 Status de Caminhões<span id="rp-status-hora" style="font-weight:600;font-size:11px;color:#64748b;margin-left:6px;"></span></div>
+                            <div id="rp-status-hora-ctrl" style="display:none;align-items:center;gap:6px;font-size:11px;font-weight:600;">
+                                <label for="rp-status-hora-select" style="color:var(--color-text-muted, #64748b);">Hora:</label>
+                                <select id="rp-status-hora-select" onchange="rpMudarHoraStatus(this.value)" style="padding:2px 8px;border-radius:6px;border:1px solid var(--color-border, #cbd5e1);background:var(--color-bg-surface, #fff);font-size:12px;font-weight:700;color:inherit;cursor:pointer;">
+                                </select>
+                            </div>
+                        </div>
                         <div class="rp-status-grid" id="rp-status-grid" style="margin-top:10px;"></div>
                     </div>
 
