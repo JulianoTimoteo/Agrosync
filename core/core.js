@@ -1,5 +1,186 @@
 Chart.register(ChartDataLabels);
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// INTELIGÊNCIA OPERACIONAL - ANÁLISE RÁPIDA DE ESPECIALISTA (VARINHA MÁGICA 🪄)
+// ═══════════════════════════════════════════════════════════════════════════════
+window.toggleDispDataset = function(index, btnId) {
+    if (typeof charts === 'undefined' || !charts['rp-disp']) return;
+    const chart = charts['rp-disp'];
+    const meta = chart.getDatasetMeta(index);
+    meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+    chart.update();
+    const btn = document.getElementById(btnId);
+    if (btn) {
+        btn.style.opacity = meta.hidden ? '0.5' : '1';
+        btn.style.filter = meta.hidden ? 'grayscale(100%)' : 'none';
+    }
+};
+
+window.getPotencialData = function() {
+    return typeof potencialData !== 'undefined' ? potencialData : {};
+};
+
+window.runExpertAnalysis = function(type) {
+    let reportHtml = '';
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const textColor = isDark ? '#f1f5f9' : '#1e293b';
+    const subColor = isDark ? '#94a3b8' : '#475569';
+    const cardBg = isDark ? '#1e293b' : '#ffffff';
+    const modalBorder = isDark ? '1px solid #334155' : '1px solid #e2e8f0';
+    const fmt = (typeof window.rpFmtNum === 'function') ? window.rpFmtNum : ((typeof rpFmtNum === 'function') ? rpFmtNum : (n, d) => Number(n).toFixed(d));
+
+    if (type === 'frentes') {
+        const fnFrentes = (typeof window.rpCalcPorFrente === 'function') ? window.rpCalcPorFrente : ((typeof rpCalcPorFrente === 'function') ? rpCalcPorFrente : null);
+        if (!fnFrentes) {
+            alert('Dados de frentes não disponíveis.');
+            return;
+        }
+        const data = fnFrentes();
+        if (!data || data.length === 0) {
+            alert('Sem dados para análise.');
+            return;
+        }
+        
+        let totalMeta = 0, totalRealizado = 0, totalPlanejado = 0;
+        let piores = [], melhores = [];
+        
+        data.forEach(d => {
+            totalMeta += (d.meta24h || 0);
+            totalPlanejado += (d.planejado || 0);
+            totalRealizado += (d.realizado || 0);
+            
+            let percentual = d.planejado > 0 ? (d.realizado / d.planejado) * 100 : 0;
+            if (percentual < 85) piores.push({f: d.frente, p: percentual, diff: (d.planejado - d.realizado)});
+            if (percentual > 105) melhores.push({f: d.frente, p: percentual, over: (d.realizado - d.planejado)});
+        });
+        
+        piores.sort((a,b) => b.diff - a.diff);
+        melhores.sort((a,b) => b.over - a.over);
+        
+        let perfGlobal = totalPlanejado > 0 ? (totalRealizado / totalPlanejado) * 100 : 0;
+        let colorGlobal = perfGlobal < 95 ? '#ef4444' : '#22c55e';
+        
+        reportHtml += `<h3 style="margin-top:0; color:${textColor};">📊 Análise de Frentes</h3>`;
+        reportHtml += `<p style="color:${textColor};">Performance Global vs Planejado: <strong style="color:${colorGlobal}; font-size:16px;">${perfGlobal.toFixed(1)}%</strong> (${fmt(totalRealizado,0)}t de ${fmt(totalPlanejado,0)}t)</p>`;
+        
+        if (piores.length > 0) {
+            reportHtml += `<h4 style="color:#ef4444; margin-bottom:4px;">🚨 Frentes Críticas (Abaixo de 85% do Planejado)</h4><ul style="margin-top:0; padding-left:20px; font-size:14px; color:${subColor};">`;
+            piores.slice(0, 3).forEach(p => {
+                reportHtml += `<li><strong>Frente ${p.f}</strong>: Entregou apenas ${p.p.toFixed(1)}% (Déficit de ${fmt(p.diff,1)}t)</li>`;
+            });
+            reportHtml += `</ul>`;
+            
+            // Contextualizando com gargalos
+            const potData = (typeof window.getPotencialData === 'function') ? window.getPotencialData() : (typeof potencialData !== 'undefined' ? potencialData : {});
+            let hasLogisticsIssue = false;
+            Object.values(potData).forEach(d => {
+                if ((d.dispCam != null && d.dispCam < 95) || (d.dispTransb != null && d.dispTransb < 95)) hasLogisticsIssue = true;
+            });
+            if (hasLogisticsIssue) {
+                reportHtml += `<div style="background:${isDark ? '#450a0a' : '#fee2e2'}; padding:10px; border-radius:6px; border-left:4px solid #ef4444; font-size:12px; color:${isDark ? '#fca5a5' : '#991b1b'}; margin-bottom:10px;">
+                <strong>Insight:</strong> A indisponibilidade de frota (caminhões/transbordo) detectada no sistema pode estar impactando diretamente estas frentes.
+                </div>`;
+            } else {
+                reportHtml += `<div style="background:${isDark ? '#451a03' : '#fef3c7'}; padding:10px; border-radius:6px; border-left:4px solid #f59e0b; font-size:12px; color:${isDark ? '#fcd34d' : '#92400e'}; margin-bottom:10px;">
+                <strong>Insight:</strong> Frota parece disponível. O déficit pode ser causado por fatores agronômicos, clima, embuchamento ou quebras na frente.
+                </div>`;
+            }
+        } else {
+            reportHtml += `<p style="color:#22c55e; font-weight:bold;">✅ Todas as frentes estão operando dentro ou acima da normalidade!</p>`;
+        }
+        
+        if (melhores.length > 0) {
+            reportHtml += `<h4 style="color:#22c55e; margin-bottom:4px;">🏆 Frentes Destaque (Acima de 105%)</h4><ul style="margin-top:0; padding-left:20px; font-size:14px; color:${subColor};">`;
+            melhores.slice(0, 3).forEach(m => {
+                reportHtml += `<li><strong>Frente ${m.f}</strong>: Operando a ${m.p.toFixed(1)}% (Superávit de ${fmt(m.over,1)}t)</li>`;
+            });
+            reportHtml += `</ul>`;
+        }
+    } 
+    else if (type === 'detalhe') {
+        const fnDetalhe = (typeof window.rpCalcDetalhe === 'function') ? window.rpCalcDetalhe : ((typeof rpCalcDetalhe === 'function') ? rpCalcDetalhe : null);
+        if (!fnDetalhe) {
+            alert('Dados de detalhes não disponíveis.');
+            return;
+        }
+        const data = fnDetalhe();
+        if (!data || data.length === 0) {
+            alert('Sem dados para análise.');
+            return;
+        }
+        
+        let densidades = [];
+        data.forEach(d => {
+            if (d.viagens > 0) {
+                densidades.push({
+                    key: `${d.frente} - ${d.owner} ${d.tipo}`,
+                    densidade: d.peso / d.viagens,
+                    viagens: d.viagens
+                });
+            }
+        });
+        densidades.sort((a,b) => b.densidade - a.densidade);
+        
+        reportHtml += `<h3 style="margin-top:0; color:${textColor};">📦 Análise de Densidade e Viagens</h3>`;
+        
+        if (densidades.length > 0) {
+            const avgDensidade = densidades.reduce((acc, curr) => acc + curr.densidade, 0) / densidades.length;
+            reportHtml += `<p style="color:${textColor};">Densidade Média Global: <strong>${fmt(avgDensidade, 2)} t/viagem</strong></p>`;
+            
+            reportHtml += `<h4 style="color:#22c55e; margin-bottom:4px;">📈 Melhores Densidades</h4><ul style="margin-top:0; padding-left:20px; font-size:14px; color:${subColor};">`;
+            densidades.slice(0, 3).forEach(d => {
+                reportHtml += `<li><strong>${d.key}</strong>: ${fmt(d.densidade, 2)} t (${d.viagens} viagens)</li>`;
+            });
+            reportHtml += `</ul>`;
+            
+            const piores = densidades.slice().reverse().slice(0, 3);
+            reportHtml += `<h4 style="color:#ef4444; margin-bottom:4px;">📉 Menores Densidades</h4><ul style="margin-top:0; padding-left:20px; font-size:14px; color:${subColor};">`;
+            piores.forEach(d => {
+                reportHtml += `<li><strong>${d.key}</strong>: ${fmt(d.densidade, 2)} t (${d.viagens} viagens)</li>`;
+            });
+            reportHtml += `</ul>`;
+            
+            if (piores.length > 0) {
+                const pior = piores[0];
+                reportHtml += `<div style="background:${isDark ? '#450a0a' : '#fef2f2'}; padding:10px; border-radius:6px; border-left:4px solid #ef4444; font-size:12px; color:${isDark ? '#fca5a5' : '#991b1b'}; margin-top:10px;">
+                <strong>Insight Operacional:</strong> A configuração <strong>${pior.key}</strong> está com o pior aproveitamento de carga (${fmt(pior.densidade, 2)} t). Veículos rodando leves encarecem o CTT (Custo de Corte, Transbordo e Transporte). Avalie imediatamente o enleiramento e a calibração de carga no transbordo desta frente para evitar perda de eficiência logística.
+                </div>`;
+            }
+        }
+    }
+
+    // Evitar sobreposição de múltiplos relatórios
+    const existingModal = document.getElementById('expert-analysis-modal-container');
+    if (existingModal) existingModal.remove();
+
+    // Criar e injetar modal no DOM
+    const modalId = 'expert-analysis-modal-container';
+    const modalHtml = `
+    <div id="${modalId}" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.7); z-index:9999; display:flex; justify-content:center; align-items:center; backdrop-filter:blur(4px); opacity:0; transition:opacity 0.3s ease;">
+        <div style="background:${cardBg}; border:${modalBorder}; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,0.3); width:90%; max-width:520px; max-height:85vh; overflow-y:auto; padding:24px; position:relative; transform:translateY(20px); transition:transform 0.3s ease;">
+            <button onclick="document.getElementById('${modalId}').remove()" style="position:absolute; top:16px; right:16px; background:transparent; border:none; font-size:24px; color:${subColor}; cursor:pointer; line-height:1;">&times;</button>
+            ${reportHtml}
+            <div style="margin-top:20px; text-align:right;">
+                <button onclick="document.getElementById('${modalId}').remove()" style="background:var(--color-primary, #38bdf8); color:#fff; border:none; padding:8px 18px; border-radius:6px; font-weight:bold; cursor:pointer;">Entendido</button>
+            </div>
+        </div>
+    </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    
+    // Animação de entrada
+    setTimeout(() => {
+        const m = document.getElementById(modalId);
+        if(m) {
+            m.style.opacity = '1';
+            m.children[0].style.transform = 'translateY(0)';
+        }
+    }, 10);
+};
+
+
+
         // Lê um design token (CSS custom property) já resolvido para o tema atual
         function getToken(nome, fallback) {
             const v = getComputedStyle(document.documentElement).getPropertyValue(nome).trim();
