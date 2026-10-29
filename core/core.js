@@ -3255,6 +3255,45 @@ Chart.register(ChartDataLabels);
             return selectedDay === 'TODOS' ? coaData : coaData.filter(d => d.dia === selectedDay);
         }
 
+                let rpMediaModoPotencial = false;
+        let rpMediaModoRpm = false;
+
+        function rpToggleMediaStatus(key) {
+            if (key === 'potencial') rpMediaModoPotencial = !rpMediaModoPotencial;
+            if (key === 'rpm') rpMediaModoRpm = !rpMediaModoRpm;
+            renderRelProducao();
+        }
+
+        function rpCalcMediaHorasPotencial(key, horaAtiva) {
+            if (!potencialData || typeof potencialData !== 'object') return { media: null, qtd: 0, horas: [] };
+            const idxAtivo = HORAS_CICLO.indexOf(horaAtiva);
+            if (idxAtivo < 0) return { media: null, qtd: 0, horas: [] };
+
+            const horasComDado = [];
+            for (let i = 0; i <= idxAtivo; i++) {
+                const h = HORAS_CICLO[i];
+                if (potencialData[h] && potencialData[h][key] !== null && potencialData[h][key] !== undefined && !isNaN(potencialData[h][key])) {
+                    if (potencialData[h][key] > 0) {
+                        horasComDado.push(h);
+                    }
+                }
+            }
+            if (!horasComDado.length) {
+                for (let i = 0; i <= idxAtivo; i++) {
+                    const h = HORAS_CICLO[i];
+                    if (potencialData[h] && potencialData[h][key] !== null && potencialData[h][key] !== undefined && !isNaN(potencialData[h][key])) {
+                        horasComDado.push(h);
+                    }
+                }
+            }
+            if (!horasComDado.length) return { media: null, qtd: 0, horas: [] };
+
+            const ultimas = horasComDado.slice(-3);
+            const soma = ultimas.reduce((acc, h) => acc + Number(potencialData[h][key]), 0);
+            const media = soma / ultimas.length;
+            return { media, qtd: ultimas.length, horas: ultimas };
+        }
+
         function rpMudarHoraStatus(val) {
             if (val === 'latest' || val === '' || isNaN(parseInt(val, 10))) {
                 rpStatusSelectedHora = null;
@@ -3532,15 +3571,52 @@ Chart.register(ChartDataLabels);
                 const totalCoa = coaDados.length;
                 const pctAnalisado = totalCoa > 0 ? (analisado / totalCoa) * 100 : 0;
                 const itens = [
-                    ['⚡ POTENCIAL', p.potencial, 'potencial'],
-                    ['🚚 IDA', p.ida, 'ida'], ['🌾 CAMPO', p.campo, 'campo'], ['↩️ VOLTA', p.volta, 'volta'],
-                    ['⏳ FILA EXT.', p.filaExt, 'filaExt'], ['📤 DESCARGA', p.descarga, 'descarga'], ['🛑 PARADOS', p.parado, 'parados'],
-                    ['🚛 CARRETAS CARREGADAS', p.carretas, 'carretas'], ['⚙️ RPM MOENDA', p.rpm, 'rpm']
+                    (() => {
+                        const isMedia = rpMediaModoPotencial;
+                        const mediaInfo = rpCalcMediaHorasPotencial('potencial', h);
+                        const v = (isMedia && mediaInfo.media !== null) ? mediaInfo.media : p.potencial;
+                        const r = rpStatusRuleInfo('potencial', v);
+                        const label = isMedia ? `⚡ POTENCIAL (${mediaInfo.qtd}h)` : '⚡ POTENCIAL';
+                        const sub = isMedia 
+                            ? `<div class="meta-info" style="font-size:10px;font-weight:700;color:var(--color-primary, #38bdf8);margin-top:2px;">⏱️ Média ${mediaInfo.qtd}h: ${mediaInfo.horas.map(x=>String(x).padStart(2,'0')+'h').join(', ')}</div>`
+                            : `<div class="meta-info" style="font-size:9px;opacity:0.6;margin-top:2px;">🖱️ 2x clique p/ média</div>`;
+                        const tip = isMedia
+                            ? `Média de ${mediaInfo.qtd}h (${mediaInfo.horas.map(x=>String(x).padStart(2,'0')+'h').join(', ')}): ${rpFmtNum(v, 0)} t/h. Duplo clique para voltar ao valor da hora.`
+                            : `Potencial da hora: ${rpFmtNum(v, 0)} t/h. Dê duplo clique para ver a média das últimas 3 horas.`;
+                        return { label, v, key: 'potencial', r, sub, tip, dblclick: "rpToggleMediaStatus('potencial')", isMedia };
+                    })(),
+                    { label: '🚚 IDA', v: p.ida, key: 'ida' },
+                    { label: '🌾 CAMPO', v: p.campo, key: 'campo' },
+                    { label: '↩️ VOLTA', v: p.volta, key: 'volta' },
+                    { label: '⏳ FILA EXT.', v: p.filaExt, key: 'filaExt' },
+                    { label: '📤 DESCARGA', v: p.descarga, key: 'descarga' },
+                    { label: '🛑 PARADOS', v: p.parado, key: 'parados' },
+                    { label: '🚛 CARRETAS CARREGADAS', v: p.carretas, key: 'carretas' },
+                    (() => {
+                        const isMedia = rpMediaModoRpm;
+                        const mediaInfo = rpCalcMediaHorasPotencial('rpm', h);
+                        const v = (isMedia && mediaInfo.media !== null) ? mediaInfo.media : p.rpm;
+                        const r = rpStatusRuleInfo('rpm', v);
+                        const label = isMedia ? `⚙️ RPM (${mediaInfo.qtd}h)` : '⚙️ RPM MOENDA';
+                        const sub = isMedia 
+                            ? `<div class="meta-info" style="font-size:10px;font-weight:700;color:var(--color-primary, #38bdf8);margin-top:2px;">⏱️ Média ${mediaInfo.qtd}h: ${mediaInfo.horas.map(x=>String(x).padStart(2,'0')+'h').join(', ')}</div>`
+                            : `<div class="meta-info" style="font-size:9px;opacity:0.6;margin-top:2px;">🖱️ 2x clique p/ média</div>`;
+                        const tip = isMedia
+                            ? `Média de ${mediaInfo.qtd}h (${mediaInfo.horas.map(x=>String(x).padStart(2,'0')+'h').join(', ')}): ${rpFmtNum(v, 0)} RPM. Duplo clique para voltar ao valor da hora.`
+                            : `RPM Moenda: ${rpFmtNum(v, 0)}. Dê duplo clique para ver a média das últimas 3 horas.`;
+                        return { label, v, key: 'rpm', r, sub, tip, dblclick: "rpToggleMediaStatus('rpm')", isMedia };
+                    })()
                 ];
-                statusGrid.innerHTML = itens.map(([label, v, key]) => {
-                    const r = rpStatusRuleInfo(key, v);
-                    const cls = v === null || v === undefined ? '' : (r.ok ? 'rp-status-ok' : 'rp-status-bad');
-                    return `<div class="kpi-card ${cls}" title="${r.tooltip}"><small>${label}</small><span class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</span></div>`;
+                statusGrid.innerHTML = itens.map(item => {
+                    const label = item.label;
+                    const v = item.v;
+                    const key = item.key;
+                    const r = item.r || rpStatusRuleInfo(key, v);
+                    const cls = (v === null || v === undefined) ? '' : (r.ok ? 'rp-status-ok' : 'rp-status-bad');
+                    const dbl = item.dblclick ? `ondblclick="${item.dblclick}" style="cursor:pointer;user-select:none;"` : '';
+                    const tip = item.tip || r.tooltip;
+                    const subHtml = item.sub || '';
+                    return `<div class="kpi-card ${cls}" ${dbl} title="${tip}"><small>${label}</small><span class="val">${v !== null && v !== undefined ? rpFmtNum(v, 0) : '—'}</span>${subHtml}</div>`;
                 }).join('')
                     + (() => {
     const rAn = rpStatusRuleInfo('analisado', pctAnalisado);
